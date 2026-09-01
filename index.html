@@ -495,7 +495,9 @@ function showAnnManageModal() {
           const res = await GAS.deleteAnn(ann);
           if (res.ok) {
             showToast('✅ ลบประกาศสำเร็จ');
-            await refreshData();
+            // ลบออกจาก local เลย ไม่ต้องโหลดใหม่ทั้งหมด (ประหยัด ~4 วิ)
+            announcements = announcements.filter(a => a.__id !== ann.__id);
+            render();
             modal.innerHTML = buildContent();
             reattach();
           } else showToast('❌ เกิดข้อผิดพลาด: ' + res.error, 'error');
@@ -530,7 +532,8 @@ function showAnnManageModal() {
         });
         if (res.ok) {
           showToast('✅ อัปโหลดประกาศสำเร็จ');
-          await refreshData();
+          // อัปเดตในเครื่องเลย ไม่ต้องโหลดใหม่ทั้งหมด (ประหยัด ~4 วิ)
+          if (res.data) announcements.unshift(res.data);
           render();
           modal.innerHTML = buildContent();
           reattach();
@@ -1501,11 +1504,12 @@ function renderPendingBar() {
     let failCount = 0;
     const now = new Date().toISOString();
 
+    const succeeded = [];
     await Promise.all(entries.map(async ([id, newStatus]) => {
       const rec = allRecords.find(r => r.__backendId === id);
       if (!rec) return;
       const res = await GAS.update({ ...rec, status: newStatus, updated_at: now });
-      if (res.ok) successCount++;
+      if (res.ok) { successCount++; succeeded.push([id, newStatus]); }
       else failCount++;
     }));
 
@@ -1515,7 +1519,18 @@ function renderPendingBar() {
     if (failCount === 0) showToast(`✅ บันทึกสำเร็จ ${successCount} รายการ`);
     else showToast(`⚠️ สำเร็จ ${successCount} / ล้มเหลว ${failCount} รายการ`, 'error');
 
-    await refreshData();
+    if (failCount > 0) {
+      await refreshData(); // มีบางรายการล้มเหลว โหลดใหม่ให้ตรงกับเซิร์ฟเวอร์
+    } else {
+      // ทุกอย่างสำเร็จ → อัปเดตในเครื่อง ไม่ต้องโหลดใหม่ (เร็วขึ้น ~4 วิ)
+      succeeded.forEach(([id, newStatus]) => {
+        const r = allRecords.find(x => x.__backendId === id);
+        if (r) { r.status = newStatus; r.updated_at = now; }
+        statusHistory.push({ document_id: id, status: newStatus, changed_at: now });
+      });
+      documents = sortDocuments_(documents);
+      render();
+    }
   };
 }
 
@@ -1660,7 +1675,13 @@ function attachStaffHandlers() {
       showToast('✅ เพิ่มเอกสารสำเร็จ');
       ['docNum','docSender','docTitle','docItem','docDate'].forEach(id => document.getElementById(id).value = '');
       document.getElementById('docStatus').value = '1';
-      await refreshData();
+      // อัปเดตในเครื่อง ไม่ต้องโหลดใหม่ทั้งหมด (เร็วขึ้น ~4 วิ)
+      if (res.data) {
+        allRecords.push(res.data);
+        documents = sortDocuments_(documents.concat([res.data]));
+        statusHistory.push({ document_id: res.data.__backendId, status: res.data.status, changed_at: res.data.created_at });
+      }
+      render();
     } else { showToast('❌ เกิดข้อผิดพลาด: ' + res.error, 'error'); }
   };
 
@@ -1697,7 +1718,9 @@ function attachStaffHandlers() {
       ['contract','debtName','debtItem','amount','borrowDate','dueDate','returnDate'].forEach(id => document.getElementById(id).value = '');
       document.getElementById('debtReturned').checked = false;
       document.getElementById('returnDateField').classList.add('hidden');
-      await refreshData();
+      // อัปเดตในเครื่อง ไม่ต้องโหลดใหม่ทั้งหมด (เร็วขึ้น ~4 วิ)
+      if (res.data) { allRecords.push(res.data); debts = sortDebts_(debts.concat([res.data])); }
+      render();
     } else { showToast('❌ เกิดข้อผิดพลาด: ' + res.error, 'error'); }
   };
 
@@ -1728,7 +1751,10 @@ function attachStaffHandlers() {
           delete pendingDocChanges[rec.__backendId];
           renderPendingBar();
           showToast('✅ ลบสำเร็จ');
-          await refreshData();
+          allRecords = allRecords.filter(r => r.__backendId !== rec.__backendId);
+          documents  = documents.filter(r => r.__backendId !== rec.__backendId);
+          statusHistory = statusHistory.filter(h => h.document_id !== rec.__backendId);
+          render();
         }
         else showToast('❌ เกิดข้อผิดพลาด', 'error');
       });
@@ -1745,7 +1771,12 @@ function attachStaffHandlers() {
       else if (!returned) returnDate = '';
       e.target.disabled = true;
       const res = await GAS.update({ ...rec, returned, return_date: returnDate, updated_at: new Date().toISOString() });
-      if (res.ok) { showToast('✅ อัปเดตสำเร็จ'); await refreshData(); }
+      if (res.ok) {
+        showToast('✅ อัปเดตสำเร็จ');
+        rec.returned = returned; rec.return_date = returnDate; rec.updated_at = new Date().toISOString();
+        debts = sortDebts_(debts);
+        render();
+      }
       else { showToast('❌ เกิดข้อผิดพลาด', 'error'); e.target.disabled = false; }
     };
   });
@@ -1756,7 +1787,12 @@ function attachStaffHandlers() {
       if (!rec) return;
       showConfirm(`ต้องการลบลูกหนี้ "${rec.name}" ใช่หรือไม่?`, async () => {
         const res = await GAS.delete(rec);
-        if (res.ok) { showToast('✅ ลบสำเร็จ'); await refreshData(); }
+        if (res.ok) {
+          showToast('✅ ลบสำเร็จ');
+          allRecords = allRecords.filter(r => r.__backendId !== rec.__backendId);
+          debts      = debts.filter(r => r.__backendId !== rec.__backendId);
+          render();
+        }
         else showToast('❌ เกิดข้อผิดพลาด', 'error');
       });
     };
