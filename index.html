@@ -29,7 +29,13 @@
     @keyframes spin { 0% { transform: rotate(0deg); } 100% { transform: rotate(360deg); } }
     ::-webkit-scrollbar { width: 6px; height: 6px; }
     ::-webkit-scrollbar-thumb { background: rgba(0,0,0,.2); border-radius: 10px; }
-  </style>
+    body { overflow-x: hidden; }
+    /* มือถือ: กันช่องกรอกดันจอ + ปิดการซูมอัตโนมัติของ iOS ตอนโฟกัส input (ต้อง >=16px) */
+    @media (max-width: 640px) {
+      input, select, textarea { font-size: 16px !important; max-width: 100%; }
+      input[type="date"], input[type="month"] { min-width: 0; }
+    }
+</style>
 </head>
 <body class="h-full">
 <div id="app" class="w-full h-full overflow-auto"></div>
@@ -49,6 +55,12 @@ const CONFIG = {
   font_family: 'Sarabun',
   font_size: 16
 };
+
+// ─── ย่อฟอนต์ให้เหมาะกับจอมือถือ (ทั้งแอปอ้างอิง CONFIG.font_size เป็นตัวคูณ) ───
+// จอเล็ก = ตัวหนังสือ/ตัวเลขจะเล็กลงตามสัดส่วน ใช้งานง่ายขึ้น ไม่ล้นจอ
+if (window.innerWidth < 768) {
+  CONFIG.font_size = window.innerWidth < 380 ? 12 : 13;
+}
 
 const STATUS_OPTIONS = [
   { id: 1, name: 'ได้รับเอกสารแล้ว รอดำเนินการ',                              color: '#64748b', icon: '📫' },
@@ -104,7 +116,7 @@ let showReturnedDebts = false; // แสดง/ซ่อน ลูกหนี�
 //      - Who has access: Anyone
 //    แล้วก๊อป URL ที่ได้ (…/exec) มาใส่ตรงนี้
 // ============================================================
-const GAS_API_URL = 'https://script.google.com/macros/s/AKfycbyqN8-pP01K49GldFzzQhXCUBlOAdoHA894Ouvezq-B5Qu6ldY6xrs6oEpSNEPK4DQ5hQ/exec'; // 👈 แก้เป็น URL /exec ของคุณ
+const GAS_API_URL = 'https://script.google.com/macros/s/AKfycbyqN8-pP01K49GldFzzQhXCUBlOAdoHA894Ouvezq-B5Qu6ldY6xrs6oEpSNEPK4DQ5hQ/exec';
 
 // action ที่เป็น "การอ่าน" → ส่งแบบ GET (เร็ว, ไม่ต้องมี body)
 // ที่เหลือเป็น "การเขียน" → ส่งแบบ POST (แนบ payload ใน body)
@@ -899,9 +911,9 @@ function renderWelcome() {
               <h2 class="font-bold" style="font-family:${CONFIG.font_family};font-size:${CONFIG.font_size*1.1}px;color:${CONFIG.text_color};">ภาพรวมสถานะเอกสารและลูกหนี้</h2>
             </div>
             <p class="text-xs mb-2 font-medium" style="color:${CONFIG.text_color};opacity:.6;font-family:${CONFIG.font_family};">สถานะเอกสาร (ไม่รวมที่จัดเก็บแล้ว)</p>
-            <div class="grid grid-cols-5 gap-2 mb-4">${statusOverviewCards}</div>
+            <div class="grid grid-cols-3 sm:grid-cols-5 gap-2 mb-4">${statusOverviewCards}</div>
             <p class="text-xs mb-2 font-medium" style="color:${CONFIG.text_color};opacity:.6;font-family:${CONFIG.font_family};">สรุปลูกหนี้</p>
-            <div class="grid grid-cols-4 gap-2">${debtOverviewCards}</div>
+            <div class="grid grid-cols-2 sm:grid-cols-4 gap-2">${debtOverviewCards}</div>
           </div>
         </div>
       </div>
@@ -1055,20 +1067,20 @@ function renderHeader(isStaff) {
     : `background:linear-gradient(135deg,${CONFIG.accent_color},${CONFIG.primary_color});`;
   const clockId = isStaff ? 'realtimeClock' : 'realtimeClockPublic';
   const btn = isStaff
-    ? `<button id="logoutBtn" class="px-6 py-2 rounded-xl font-bold text-white btn-hover" style="font-family:${CONFIG.font_family};background-color:rgba(255,255,255,.2);">🚪 ออกจากระบบ</button>`
-    : `<button id="backHomeBtn" class="px-6 py-2 rounded-xl font-bold text-white btn-hover" style="font-family:${CONFIG.font_family};background-color:rgba(255,255,255,.2);">🏠 กลับหน้าหลัก</button>`;
+    ? `<button id="logoutBtn" class="px-3 md:px-6 py-2 rounded-xl font-bold text-white btn-hover text-sm md:text-base flex-shrink-0" style="font-family:${CONFIG.font_family};background-color:rgba(255,255,255,.2);">🚪 <span class="hidden sm:inline">ออกจากระบบ</span></button>`
+    : `<button id="backHomeBtn" class="px-3 md:px-6 py-2 rounded-xl font-bold text-white btn-hover text-sm md:text-base flex-shrink-0" style="font-family:${CONFIG.font_family};background-color:rgba(255,255,255,.2);">🏠 <span class="hidden sm:inline">กลับหน้าหลัก</span></button>`;
   return `
     <header class="sticky top-0 z-20 shadow-lg" style="${bg}">
-      <div class="max-w-7xl mx-auto px-6 py-4 flex justify-between items-center">
-        <div class="flex items-center gap-3">
-          <img src="${LOGO_URL}" alt="โลโก้" class="w-12 h-12 rounded-full object-cover flex-shrink-0" style="border:2px solid rgba(255,255,255,.6);">
-          <div>
-            <h1 class="font-bold text-white" style="font-family:${CONFIG.font_family};font-size:${CONFIG.font_size*1.5}px;">${CONFIG.system_title}</h1>
-            <p class="text-white opacity-90" style="font-family:${CONFIG.font_family};font-size:${CONFIG.font_size*.9}px;">${CONFIG.college_name}</p>
+      <div class="max-w-7xl mx-auto px-3 md:px-6 py-2 md:py-4 flex justify-between items-center gap-2">
+        <div class="flex items-center gap-2 md:gap-3 min-w-0">
+          <img src="${LOGO_URL}" alt="โลโก้" class="w-9 h-9 md:w-12 md:h-12 rounded-full object-cover flex-shrink-0" style="border:2px solid rgba(255,255,255,.6);">
+          <div class="min-w-0">
+            <h1 class="font-bold text-white truncate" style="font-family:${CONFIG.font_family};font-size:${CONFIG.font_size*1.5}px;">${CONFIG.system_title}</h1>
+            <p class="text-white opacity-90 truncate hidden sm:block" style="font-family:${CONFIG.font_family};font-size:${CONFIG.font_size*.9}px;">${CONFIG.college_name}</p>
           </div>
         </div>
-        <div class="flex items-center gap-4">
-          <div id="${clockId}" class="text-white text-center">
+        <div class="flex items-center gap-2 md:gap-4 flex-shrink-0">
+          <div id="${clockId}" class="text-white text-center hidden sm:block">
             <div class="font-bold" style="font-family:${CONFIG.font_family};font-size:${CONFIG.font_size*1.1}px;">--:--:--</div>
             <div class="text-sm opacity-90" style="font-family:${CONFIG.font_family};">-- --- ----</div>
           </div>
@@ -1084,26 +1096,27 @@ function renderStatusSummary(isStaff) {
   const archivedCount = statusCounts[6] || 0;
   const activeOptions = STATUS_OPTIONS.filter(s => s.id !== 6);
   const btnClass = isStaff ? 'status-category-btn' : 'status-category-btn-public';
+  const xbtn = 'px-3 md:px-6 py-2 md:py-3 rounded-xl font-bold text-white btn-hover text-sm md:text-base';
   const extraBtns = isStaff ? `
-    <button id="manageAnnBtn" class="px-6 py-3 rounded-xl font-bold text-white btn-hover" style="font-family:${CONFIG.font_family};background:linear-gradient(135deg,#8b5cf6,#6366f1);">📢 จัดการประกาศ</button>
-    <button id="importDataBtn" class="px-6 py-3 rounded-xl font-bold text-white btn-hover" style="font-family:${CONFIG.font_family};background:linear-gradient(135deg,#10b981,#059669);">🔄 รีเฟรชข้อมูล</button>
-    <button id="summaryBtn"    class="px-6 py-3 rounded-xl font-bold text-white btn-hover" style="font-family:${CONFIG.font_family};background:linear-gradient(135deg,${CONFIG.accent_color},${CONFIG.primary_color});">📸 สร้างรายงานสรุป</button>`
-    : `<button id="summaryBtn" class="px-6 py-3 rounded-xl font-bold text-white btn-hover" style="font-family:${CONFIG.font_family};background:linear-gradient(135deg,${CONFIG.accent_color},${CONFIG.primary_color});">📸 สร้างรายงานสรุป</button>`;
+    <button id="manageAnnBtn" class="${xbtn}" style="font-family:${CONFIG.font_family};background:linear-gradient(135deg,#8b5cf6,#6366f1);">📢 จัดการประกาศ</button>
+    <button id="importDataBtn" class="${xbtn}" style="font-family:${CONFIG.font_family};background:linear-gradient(135deg,#10b981,#059669);">🔄 รีเฟรช</button>
+    <button id="summaryBtn"    class="${xbtn}" style="font-family:${CONFIG.font_family};background:linear-gradient(135deg,${CONFIG.accent_color},${CONFIG.primary_color});">📸 รายงานสรุป</button>`
+    : `<button id="summaryBtn" class="${xbtn}" style="font-family:${CONFIG.font_family};background:linear-gradient(135deg,${CONFIG.accent_color},${CONFIG.primary_color});">📸 รายงานสรุป</button>`;
   return `
-    <div class="rounded-2xl p-6 shadow-lg mb-6" style="background-color:${CONFIG.surface_color};">
-      <div class="flex justify-between items-center mb-4 gap-4 flex-wrap">
+    <div class="rounded-2xl p-4 md:p-6 shadow-lg mb-6" style="background-color:${CONFIG.surface_color};">
+      <div class="flex justify-between items-center mb-4 gap-3 flex-wrap">
         <h2 class="font-bold flex items-center gap-2" style="font-family:${CONFIG.font_family};font-size:${CONFIG.font_size*1.3}px;color:${CONFIG.text_color};">📊 สรุปสถานะเอกสาร</h2>
-        <div class="flex gap-3 flex-wrap">${extraBtns}</div>
+        <div class="flex gap-2 md:gap-3 flex-wrap">${extraBtns}</div>
       </div>
-      <div class="grid grid-cols-1 md:grid-cols-5 gap-4 mb-4">
+      <div class="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-5 gap-2 md:gap-4 mb-4">
         ${activeOptions.map(s=>{
           const isActive = docStatusFilter === s.id;
           const borderColor = isActive ? s.color : 'transparent';
           const ring = isActive ? ('box-shadow:0 0 0 3px ' + s.color + '33;') : '';
           return `
-          <button class="${btnClass} rounded-2xl p-5 text-center shadow-lg btn-hover" data-status="${s.id}" style="background-color:${CONFIG.background_color};border:2px solid ${borderColor};transition:all .3s ease;${ring}">
-            <div class="text-4xl mb-2">${s.icon}</div>
-            <div class="font-black mb-2" style="font-family:${CONFIG.font_family};font-size:${CONFIG.font_size*2}px;color:${s.color};">${statusCounts[s.id]||0}</div>
+          <button class="${btnClass} rounded-2xl p-3 md:p-5 text-center shadow-lg btn-hover" data-status="${s.id}" style="background-color:${CONFIG.background_color};border:2px solid ${borderColor};transition:all .3s ease;${ring}">
+            <div class="text-3xl md:text-4xl mb-1 md:mb-2">${s.icon}</div>
+            <div class="font-black mb-1 md:mb-2" style="font-family:${CONFIG.font_family};font-size:${CONFIG.font_size*2}px;color:${s.color};">${statusCounts[s.id]||0}</div>
             <div class="font-bold text-xs" style="font-family:${CONFIG.font_family};color:${CONFIG.text_color};opacity:.8;">${s.name}</div>
           </button>`;
         }).join('')}
@@ -1153,12 +1166,12 @@ function renderStaffDashboard() {
   return `
     <div class="w-full h-full" style="background-color:${CONFIG.background_color};">
       ${renderHeader(true)}
-      <main class="max-w-7xl mx-auto px-6 py-6">
+      <main class="max-w-7xl mx-auto px-3 md:px-6 py-4 md:py-6">
         ${renderStatusSummary(true)}
 
         <!-- Forms -->
         <div class="grid grid-cols-1 lg:grid-cols-2 gap-6 mb-6">
-          <div class="rounded-2xl p-6 shadow-lg" style="background-color:${CONFIG.surface_color};">
+          <div class="rounded-2xl p-4 md:p-6 shadow-lg" style="background-color:${CONFIG.surface_color};">
             <h2 class="font-bold mb-5 flex items-center gap-2" style="font-family:${CONFIG.font_family};font-size:${CONFIG.font_size*1.3}px;color:${CONFIG.text_color};">📄 เพิ่มเอกสาร</h2>
             <div class="space-y-3">
               <input type="text" id="docNum"    placeholder="เลขที่เอกสาร"  class="w-full px-4 py-3 rounded-xl border-2" style="font-family:${CONFIG.font_family};border-color:${CONFIG.primary_color};">
@@ -1176,7 +1189,7 @@ function renderStaffDashboard() {
             </div>
           </div>
 
-          <div class="rounded-2xl p-6 shadow-lg" style="background-color:${CONFIG.surface_color};">
+          <div class="rounded-2xl p-4 md:p-6 shadow-lg" style="background-color:${CONFIG.surface_color};">
             <h2 class="font-bold mb-5 flex items-center gap-2" style="font-family:${CONFIG.font_family};font-size:${CONFIG.font_size*1.3}px;color:${CONFIG.text_color};">💰 เพิ่มลูกหนี้</h2>
             <div class="space-y-3">
               <input type="text"   id="contract"   placeholder="เลขที่สัญญา"     class="w-full px-4 py-3 rounded-xl border-2" style="font-family:${CONFIG.font_family};border-color:${CONFIG.accent_color};">
@@ -1206,7 +1219,7 @@ function renderStaffDashboard() {
           </div>
         </div>
 
-        <div class="rounded-2xl p-6 shadow-lg mb-6" style="background-color:${CONFIG.surface_color};">
+        <div class="rounded-2xl p-4 md:p-6 shadow-lg mb-6" style="background-color:${CONFIG.surface_color};">
           <div class="flex flex-wrap justify-between items-center gap-4 mb-5">
             <div>
               <h2 class="font-bold flex items-center gap-2" style="font-family:${CONFIG.font_family};font-size:${CONFIG.font_size*1.3}px;color:${CONFIG.text_color};">📋 รายการเอกสาร (${filteredDocs.length})</h2>
@@ -1222,7 +1235,7 @@ function renderStaffDashboard() {
           ${filteredDocs.length > 0 ? renderDocPagination(filteredDocs.length, '') : ''}
         </div>
 
-        <div class="rounded-2xl p-6 shadow-lg" style="background-color:${CONFIG.surface_color};">
+        <div class="rounded-2xl p-4 md:p-6 shadow-lg" style="background-color:${CONFIG.surface_color};">
           <div class="flex flex-wrap justify-between items-center gap-4 mb-5">
             <div>
               <h2 class="font-bold flex items-center gap-2" style="font-family:${CONFIG.font_family};font-size:${CONFIG.font_size*1.3}px;color:${CONFIG.text_color};">💳 รายการลูกหนี้ (${debts.length})</h2>
@@ -1259,7 +1272,7 @@ function renderDebtOverviewLocked() {
   ];
 
   return `
-    <div class="rounded-2xl p-6 shadow-lg" style="background-color:${CONFIG.surface_color};">
+    <div class="rounded-2xl p-4 md:p-6 shadow-lg" style="background-color:${CONFIG.surface_color};">
       <h2 class="font-bold flex items-center gap-2 mb-4" style="font-family:${CONFIG.font_family};font-size:${CONFIG.font_size*1.3}px;color:${CONFIG.text_color};">💳 ภาพรวมลูกหนี้</h2>
       <div class="rounded-xl p-4 mb-5 flex items-center gap-3" style="background-color:#fef3c7;">
         <span style="font-size:1.5rem;flex-shrink:0;">🔒</span>
@@ -1282,7 +1295,7 @@ function renderPublicView() {
   const isFullAccess  = publicAccessLevel === 'full';
 
   const debtSection = isFullAccess ? `
-        <div class="rounded-2xl p-6 shadow-lg" style="background-color:${CONFIG.surface_color};">
+        <div class="rounded-2xl p-4 md:p-6 shadow-lg" style="background-color:${CONFIG.surface_color};">
           <div class="flex flex-wrap justify-between items-center gap-4 mb-5">
             <div>
               <h2 class="font-bold flex items-center gap-2" style="font-family:${CONFIG.font_family};font-size:${CONFIG.font_size*1.3}px;color:${CONFIG.text_color};">💳 สถานะลูกหนี้ (${debts.length})</h2>
@@ -1306,10 +1319,10 @@ function renderPublicView() {
   return `
     <div class="w-full h-full" style="background-color:${CONFIG.background_color};">
       ${renderHeader(false)}
-      <main class="max-w-7xl mx-auto px-6 py-6">
+      <main class="max-w-7xl mx-auto px-3 md:px-6 py-4 md:py-6">
         ${renderStatusSummary(false)}
 
-        <div class="rounded-2xl p-6 shadow-lg mb-6" style="background-color:${CONFIG.surface_color};">
+        <div class="rounded-2xl p-4 md:p-6 shadow-lg mb-6" style="background-color:${CONFIG.surface_color};">
           <div class="flex flex-wrap justify-between items-center gap-4 mb-5">
             <div>
               <h2 class="font-bold flex items-center gap-2" style="font-family:${CONFIG.font_family};font-size:${CONFIG.font_size*1.3}px;color:${CONFIG.text_color};">📋 สถานะเอกสาร (${filteredDocs.length})</h2>
@@ -1797,7 +1810,7 @@ if ('serviceWorker' in navigator) {
 // เว้นว่าง = ปิด web push (เว็บยังทำงานปกติทุกอย่าง)
 // ⚠️ ใช้ Service Worker ตัวเดียวกับ PWA (sw.js) เพื่อไม่ให้ worker ชนกัน
 // ============================================================
-const ONESIGNAL_APP_ID = '933c2a67-a565-4bcd-99cc-feaf90db110a'; // 👈 ใส่ App ID จาก OneSignal (เว้นว่าง = ยังไม่เปิด)
+const ONESIGNAL_APP_ID = '933c2a67-a565-4bcd-99cc-feaf90db110a'; // App ID จาก OneSignal (ไม่ลับ)
 window.OneSignalDeferred = window.OneSignalDeferred || [];
 if (ONESIGNAL_APP_ID) {
   window.OneSignalDeferred.push(async function(OneSignal) {
@@ -1807,9 +1820,55 @@ if (ONESIGNAL_APP_ID) {
       serviceWorkerParam: { scope: './' }, // scope เท่ากับโฟลเดอร์ของเว็บ — รองรับทั้ง project page และ custom domain
       allowLocalhostAsSecureOrigin: true
     });
-    // ปุ่มกระดิ่งให้ผู้ใช้กด "อนุญาต/ปิด" การแจ้งเตือนเอง
-    OneSignal.Slidedown.promptPush();
+    setupPushButton(OneSignal); // ปุ่มลอยให้ผู้ใช้กดเปิด/ปิดแจ้งเตือนเอง
   });
+}
+
+// ─── ปุ่มลอย "เปิดแจ้งเตือน" (มุมขวาล่าง) ───
+// แสดงเฉพาะอุปกรณ์ที่รองรับ web push (บน iPhone จะขึ้นเฉพาะตอนติดตั้งเป็นแอปแล้วเปิดจากไอคอน)
+function setupPushButton(OneSignal) {
+  try { if (!OneSignal.Notifications.isPushSupported()) return; } catch(e) { return; }
+  if (document.getElementById('pushToggleBtn')) return;
+
+  const btn = document.createElement('button');
+  btn.id = 'pushToggleBtn';
+  btn.style.cssText = 'position:fixed;right:14px;bottom:14px;z-index:45;padding:11px 16px;border-radius:9999px;border:none;color:#fff;font-family:Sarabun,sans-serif;font-weight:700;font-size:14px;box-shadow:0 8px 22px rgba(0,0,0,.28);cursor:pointer;';
+  document.body.appendChild(btn);
+
+  function isOn() {
+    try { return OneSignal.Notifications.permission && OneSignal.User.PushSubscription.optedIn; }
+    catch(e) { return false; }
+  }
+  function refresh() {
+    const on = isOn();
+    btn.textContent = on ? '🔔 แจ้งเตือนเปิดอยู่' : '🔔 เปิดแจ้งเตือน';
+    btn.style.background = on ? '#10b981' : 'linear-gradient(135deg,#2563eb,#0ea5e9)';
+  }
+  refresh();
+
+  btn.onclick = async () => {
+    btn.disabled = true;
+    try {
+      if (isOn()) {
+        await OneSignal.User.PushSubscription.optOut();
+        showToast('🔕 ปิดแจ้งเตือนแล้ว');
+      } else {
+        await OneSignal.Notifications.requestPermission();
+        await OneSignal.User.PushSubscription.optIn();
+        if (OneSignal.Notifications.permission) showToast('✅ เปิดแจ้งเตือนสำเร็จ');
+        else showToast('❌ เบราว์เซอร์ปฏิเสธการแจ้งเตือน (ตั้งค่าอนุญาตใหม่ได้)', 'error');
+      }
+    } catch(e) {
+      showToast('❌ ' + e, 'error');
+    }
+    btn.disabled = false;
+    refresh();
+  };
+
+  try {
+    OneSignal.Notifications.addEventListener('permissionChange', refresh);
+    OneSignal.User.PushSubscription.addEventListener('change', refresh);
+  } catch(e) {}
 }
 </script>
 </body>
