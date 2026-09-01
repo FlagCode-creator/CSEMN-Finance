@@ -1,0 +1,59 @@
+// ============================================================
+// Service Worker — PWA app shell cache
+// ------------------------------------------------------------
+// นโยบายแบบปลอดภัย:
+//  - แคชเฉพาะ "เปลือกแอป" (ไฟล์ static ใน origin เดียวกัน) เท่านั้น
+//  - คำขอข้ามโดเมน (เช่น Google Apps Script API, Google Drive, Tailwind CDN,
+//    Google Fonts) จะ "ไม่ยุ่ง" — ปล่อยให้วิ่งผ่านเน็ตเวิร์กตามปกติเสมอ
+//    เพื่อไม่ให้ข้อมูลเอกสาร/ลูกหนี้ค้างเป็นของเก่า
+// ============================================================
+// ─── OneSignal Web Push — รวมไว้ใน SW ตัวเดียว ไม่ต้องมี worker ซ้อนกัน ───
+// ถ้ายังไม่เปิดใช้ OneSignal บรรทัดนี้จะเงียบๆ (โหลด SDK มารอ push แต่ไม่มีอะไรเกิดจนกว่าจะ subscribe)
+// ถ้าโหลดไม่ได้ (เช่นออฟไลน์) ก็ข้ามไป ไม่กระทบการแคชเปลือกแอปด้านล่าง
+try { importScripts('https://cdn.onesignal.com/sdks/web/v16/OneSignalSDK.sw.js'); } catch (e) {}
+
+const CACHE_NAME = 'finance-doc-tracker-v1';
+const APP_SHELL = [
+  './',
+  './index.html',
+  './manifest.webmanifest',
+  './icons/icon-192.png',
+  './icons/icon-512.png'
+];
+
+self.addEventListener('install', (event) => {
+  event.waitUntil(
+    caches.open(CACHE_NAME).then((cache) => cache.addAll(APP_SHELL)).catch(() => {})
+  );
+  self.skipWaiting();
+});
+
+self.addEventListener('activate', (event) => {
+  event.waitUntil(
+    caches.keys().then((keys) =>
+      Promise.all(keys.filter((k) => k !== CACHE_NAME).map((k) => caches.delete(k)))
+    )
+  );
+  self.clients.claim();
+});
+
+self.addEventListener('fetch', (event) => {
+  const req = event.request;
+
+  // จัดการเฉพาะ GET และเฉพาะไฟล์ใน origin เดียวกัน (เปลือกแอป)
+  // ที่เหลือ (API/CDN/ข้ามโดเมน) ปล่อยผ่านโดยไม่แตะ
+  if (req.method !== 'GET' || new URL(req.url).origin !== self.location.origin) {
+    return;
+  }
+
+  // network-first: พยายามดึงของใหม่ก่อน ถ้าออฟไลน์ค่อยใช้แคช
+  event.respondWith(
+    fetch(req)
+      .then((res) => {
+        const copy = res.clone();
+        caches.open(CACHE_NAME).then((cache) => cache.put(req, copy)).catch(() => {});
+        return res;
+      })
+      .catch(() => caches.match(req).then((cached) => cached || caches.match('./index.html')))
+  );
+});
