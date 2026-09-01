@@ -1796,9 +1796,13 @@ async function init() {
 
 init();
 
-// ─── ลงทะเบียน Service Worker (PWA) — ไม่กระทบการทำงานหลักถ้าล้มเหลว ───
+// ─── ลงทะเบียน Service Worker (PWA) ───
+// ⚠️ ถ้าเปิด OneSignal ต้อง "ปล่อยให้ OneSignal เป็นคนลงทะเบียน sw.js เอง" (มันจะแนบ ?appId ที่จำเป็น)
+// ถ้าเราลงทะเบียนเองก่อน OneSignal จะลงทะเบียน worker ตัวเองไม่ได้ → subscribe ไม่ได้
+// จึงลง PWA worker เองเฉพาะตอน "ไม่ได้ใช้ OneSignal" เท่านั้น
 if ('serviceWorker' in navigator) {
   window.addEventListener('load', () => {
+    if (ONESIGNAL_APP_ID) return; // ใช้ OneSignal → ให้มันลงทะเบียน sw.js เอง (sw.js มี PWA cache + push ในตัวเดียว)
     navigator.serviceWorker.register('sw.js').catch(err => console.warn('SW register failed:', err));
   });
 }
@@ -1814,6 +1818,18 @@ const ONESIGNAL_APP_ID = '933c2a67-a565-4bcd-99cc-feaf90db110a'; // App ID จ�
 window.OneSignalDeferred = window.OneSignalDeferred || [];
 if (ONESIGNAL_APP_ID) {
   window.OneSignalDeferred.push(async function(OneSignal) {
+    // ล้าง service worker เก่าที่เราเคยลงทะเบียนเอง (ไม่มี ?appId) ในโฟลเดอร์นี้
+    // เพื่อให้ OneSignal ลงทะเบียน sw.js ของมันเอง (แนบ ?appId) ได้สะอาด — จำเป็นต่อการ subscribe
+    try {
+      const dirScope = new URL('./', location.href).href;
+      const regs = await navigator.serviceWorker.getRegistrations();
+      for (const r of regs) {
+        if (r.scope === dirScope && r.active && r.active.scriptURL.indexOf('appId') === -1) {
+          await r.unregister();
+        }
+      }
+    } catch (e) {}
+
     await OneSignal.init({
       appId: ONESIGNAL_APP_ID,
       serviceWorkerPath: 'sw.js',          // ใช้ SW เดียวกับ PWA (sw.js มี importScripts ของ OneSignal อยู่แล้ว)
