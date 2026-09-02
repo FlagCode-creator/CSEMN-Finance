@@ -972,7 +972,7 @@ function renderDocRow(doc, isStaff) {
     </div>` : '';
   const pendingBadge = isPending ? '<span class="text-xs font-bold" style="color:#f59e0b;">✏️ รอบันทึก</span>' : '';
   return `
-    <div class="doc-row-click rounded-xl px-4 py-3 card-animate flex items-center gap-3 flex-wrap md:flex-nowrap cursor-pointer"
+    <div class="doc-row-click rounded-xl px-3 py-2 md:px-4 md:py-3 card-animate flex items-center gap-2 md:gap-3 flex-wrap md:flex-nowrap cursor-pointer"
          data-id="${doc.__backendId}"
          style="background-color:${rowBg};border:${rowBorder};transition:transform .2s ease,box-shadow .2s ease;">
       <span class="px-3 py-1 rounded-full text-xs font-bold text-white flex-shrink-0" style="background-color:${CONFIG.primary_color};">${doc.document_number}</span>
