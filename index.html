@@ -179,7 +179,8 @@ const GAS = {
   setup()           { return this._call('setupSheets'); },
   uploadAnn(obj)     { return this._call('uploadAnnouncement', obj); },
   deleteAnn(obj)     { return this._call('deleteAnnouncement', obj); },
-  generatePdf(obj)   { return this._call('generateSummaryPdf', obj); }
+  generatePdf(obj)   { return this._call('generateSummaryPdf', obj); },
+  sendPush(obj)      { return this._call('sendPush', obj); }
 };
 
 // ============================================================
@@ -1534,7 +1535,8 @@ function renderPendingBar() {
     await Promise.all(entries.map(async ([id, newStatus]) => {
       const rec = allRecords.find(r => r.__backendId === id);
       if (!rec) return;
-      const res = await GAS.update({ ...rec, status: newStatus, updated_at: now });
+      // silent:true = ไม่ให้ push ทีละอัน (จะยิงสรุปรวมครั้งเดียวหลังบันทึกเสร็จ)
+      const res = await GAS.update({ ...rec, status: newStatus, updated_at: now, silent: true });
       if (res.ok) { successCount++; succeeded.push([id, newStatus]); }
       else failCount++;
     }));
@@ -1544,6 +1546,25 @@ function renderPendingBar() {
 
     if (failCount === 0) showToast(`✅ บันทึกสำเร็จ ${successCount} รายการ`);
     else showToast(`⚠️ สำเร็จ ${successCount} / ล้มเหลว ${failCount} รายการ`, 'error');
+
+    // ─── ยิง push "สรุปรวมครั้งเดียว" สำหรับเอกสารที่เปลี่ยนสำเร็จ (แบบ A) ───
+    if (succeeded.length > 0) {
+      let pushMsg;
+      if (succeeded.length === 1) {
+        const [id, st] = succeeded[0];
+        const doc = allRecords.find(r => r.__backendId === id);
+        const sName = (STATUS_OPTIONS.find(o => o.id === st) || {}).name || '';
+        pushMsg = (doc ? doc.document_number : '') + ' ➜ ' + sName;
+      } else {
+        const nums = succeeded
+          .map(([id]) => { const d = allRecords.find(r => r.__backendId === id); return d ? d.document_number : ''; })
+          .filter(Boolean);
+        const shown = nums.slice(0, 2).join(', ');
+        pushMsg = 'อัปเดตสถานะ ' + succeeded.length + ' เอกสาร (' + shown +
+                  (nums.length > 2 ? ' และอีก ' + (nums.length - 2) + ' รายการ' : '') + ')';
+      }
+      GAS.sendPush({ title: '🔔 อัปเดตสถานะเอกสาร', message: pushMsg }); // ยิงแล้วไม่ต้องรอ (ไม่หน่วง UI)
+    }
 
     if (failCount > 0) {
       await refreshData(); // มีบางรายการล้มเหลว โหลดใหม่ให้ตรงกับเซิร์ฟเวอร์
