@@ -34,6 +34,16 @@
     @media (max-width: 640px) {
       input, select, textarea { font-size: 16px !important; max-width: 100%; }
       input[type="date"], input[type="month"] { min-width: 0; }
+      /* บีบระยะห่างให้แน่นขึ้น ดูใกล้เคียงหน้าคอมมากขึ้น (แสดงได้มากต่อจอ) */
+      .p-8 { padding: 0.9rem !important; }
+      .p-6 { padding: 0.8rem !important; }
+      .py-6 { padding-top: 0.8rem !important; padding-bottom: 0.8rem !important; }
+      .gap-6 { gap: 0.55rem !important; }
+      .gap-5 { gap: 0.5rem !important; }
+      .gap-4 { gap: 0.45rem !important; }
+      .mb-6 { margin-bottom: 0.7rem !important; }
+      .mb-5 { margin-bottom: 0.6rem !important; }
+      .space-y-3 > * + * { margin-top: 0.45rem !important; }
     }
 </style>
 </head>
@@ -57,9 +67,9 @@ const CONFIG = {
 };
 
 // ─── ย่อฟอนต์ให้เหมาะกับจอมือถือ (ทั้งแอปอ้างอิง CONFIG.font_size เป็นตัวคูณ) ───
-// จอเล็ก = ตัวหนังสือ/ตัวเลขจะเล็กลงตามสัดส่วน ใช้งานง่ายขึ้น ไม่ล้นจอ
+// จอเล็ก = ตัวหนังสือ/ตัวเลขจะเล็กลงตามสัดส่วน แสดงได้มากขึ้นต่อแถว ใกล้เคียงหน้าคอม
 if (window.innerWidth < 768) {
-  CONFIG.font_size = window.innerWidth < 380 ? 12 : 13;
+  CONFIG.font_size = window.innerWidth < 420 ? 11 : 12;
 }
 
 const STATUS_OPTIONS = [
