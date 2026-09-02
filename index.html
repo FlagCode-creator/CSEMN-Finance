@@ -116,7 +116,7 @@ let showReturnedDebts = false; // แสดง/ซ่อน ลูกหนี�
 //      - Who has access: Anyone
 //    แล้วก๊อป URL ที่ได้ (…/exec) มาใส่ตรงนี้
 // ============================================================
-const GAS_API_URL = 'https://script.google.com/macros/s/AKfycbwJ_9gGS7mPCgaI7YsAgiXtRQNzXTxnRpwOsygp-54mmvWbFa2ZjXLdBLG0mBNIYtImGA/exec';
+const GAS_API_URL = 'https://script.google.com/macros/s/AKfycbyqN8-pP01K49GldFzzQhXCUBlOAdoHA894Ouvezq-B5Qu6ldY6xrs6oEpSNEPK4DQ5hQ/exec';
 
 // action ที่เป็น "การอ่าน" → ส่งแบบ GET (เร็ว, ไม่ต้องมี body)
 // ที่เหลือเป็น "การเขียน" → ส่งแบบ POST (แนบ payload ใน body)
@@ -347,6 +347,19 @@ function buildDriveUrl_(path) {
   return protocol + 'drive.google.com/' + path;
 }
 
+// เปิดลิงก์ภายนอก (ไฟล์ Drive) ให้ทำงานได้ทั้งเบราว์เซอร์ปกติและ PWA ที่ติดตั้ง (standalone)
+// ปัญหา: ในโหมด standalone (โดยเฉพาะ iOS) target="_blank" / window.open มักถูกบล็อก เปิดแท็บใหม่ไม่ได้
+// วิธีแก้: ลองเปิดแท็บใหม่ก่อน ถ้าถูกบล็อก (คืน null) ให้ "นำทางทั้งหน้า" ไปที่ลิงก์แทน (กลับได้ด้วยปุ่มย้อนกลับ)
+function openExternal_(url) {
+  try {
+    // ไม่ใส่ 'noopener' เพราะจะทำให้ค่าที่คืนเป็น null เสมอ จนตรวจสำเร็จ/ล้มเหลวผิด
+    const w = window.open(url, '_blank');
+    if (!w || w.closed || typeof w.closed === 'undefined') { window.location.href = url; }
+  } catch (e) {
+    window.location.href = url;
+  }
+}
+
 function fileToBase64(file) {
   return new Promise((resolve, reject) => {
     const reader = new FileReader();
@@ -406,7 +419,9 @@ function showAnnouncementViewer(ann) {
     //  URL-rewriter ของ Apps Script IFRAME sandbox พัง syntax ได้)
     embedUrl = buildDriveUrl_('file/d/' + fileId + '/preview');
   }
-  const downloadUrl = fileId ? buildDriveUrl_('uc?export=download&id=' + fileId) : ann.file_url;
+  // ใช้หน้า "view" ของ Drive (เป็นหน้าเว็บจริง มีปุ่มดาวน์โหลดในตัว) — เปิดได้ทุกที่รวมถึง PWA
+  // ต่างจาก uc?export=download ที่เป็นการดาวน์โหลดตรงซึ่ง PWA (iOS) มักทำไม่ได้
+  const viewUrl = fileId ? buildDriveUrl_('file/d/' + fileId + '/view') : ann.file_url;
 
   modal.innerHTML = `
     <div class="rounded-2xl shadow-2xl w-full card-animate flex flex-col" style="background-color:${CONFIG.surface_color};max-width:900px;height:90vh;">
@@ -416,7 +431,7 @@ function showAnnouncementViewer(ann) {
           ${ann.description ? '<p class="text-sm truncate" style="opacity:.6;font-family:' + CONFIG.font_family + ';color:' + CONFIG.text_color + ';">' + ann.description + '</p>' : ''}
         </div>
         <div class="flex items-center gap-3 flex-shrink-0">
-          <a href="${downloadUrl}" target="_blank" class="px-4 py-2 rounded-xl font-bold text-white btn-hover text-sm" style="background-color:#10b981;font-family:${CONFIG.font_family};">⬇️ ดาวน์โหลด</a>
+          <button id="downloadAnnBtn" class="px-4 py-2 rounded-xl font-bold text-white btn-hover text-sm" style="background-color:#10b981;font-family:${CONFIG.font_family};">⬇️ เปิด/ดาวน์โหลด</button>
           <button id="closeAnnViewer" class="text-3xl leading-none" style="color:${CONFIG.text_color};opacity:.4;">&times;</button>
         </div>
       </div>
@@ -428,6 +443,7 @@ function showAnnouncementViewer(ann) {
   document.body.appendChild(modal);
   modal.addEventListener('click', e => { if (e.target === modal) modal.remove(); });
   document.getElementById('closeAnnViewer').onclick = () => modal.remove();
+  document.getElementById('downloadAnnBtn').onclick = () => openExternal_(viewUrl);
 }
 
 // ─── Announcement Management (Staff) — อัปโหลดไฟล์จริง ────
@@ -787,7 +803,7 @@ function showSummaryModal() {
       const res = await GAS.generatePdf({ dateStr: selectedDate });
       if (res.ok) {
         showToast('✅ สร้าง PDF สำเร็จ กำลังเปิดไฟล์...');
-        window.open(res.url, '_blank');
+        openExternal_(res.url);
       } else {
         showToast('❌ สร้าง PDF ไม่สำเร็จ: ' + res.error, 'error');
       }
