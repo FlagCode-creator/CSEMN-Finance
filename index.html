@@ -13,6 +13,8 @@
   <!-- OneSignal Web Push SDK (ช่องทางแจ้งเตือนแยกจาก LINE) -->
   <script src="https://cdn.onesignal.com/sdks/web/v16/OneSignalSDK.page.js" defer></script>
   <script src="https://cdn.tailwindcss.com"></script>
+  <!-- SheetJS: อ่านไฟล์ Excel งบประมาณ (เฉพาะปุ่มอัปโหลดของเจ้าหน้าที่) -->
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
   <link href="https://fonts.googleapis.com/css2?family=Sarabun:wght@400;500;600;700;800&display=swap" rel="stylesheet">
   <style>
     body { box-sizing: border-box; font-family: 'Sarabun', sans-serif; }
@@ -143,7 +145,7 @@ const GAS_API_URL = 'https://script.google.com/macros/s/AKfycbyogCQK99QsSfdWntcu
 
 // action ที่เป็น "การอ่าน" → ส่งแบบ GET (เร็ว, ไม่ต้องมี body)
 // ที่เหลือเป็น "การเขียน" → ส่งแบบ POST (แนบ payload ใน body)
-const GAS_READ_ACTIONS = { getAllData: true, getScopedData: true, checkAuth: true };
+const GAS_READ_ACTIONS = { getAllData: true, getScopedData: true, checkAuth: true, getBudget: true };
 
 const GAS = {
   _call(fnName, arg) {
@@ -193,7 +195,9 @@ const GAS = {
   uploadAnn(obj)     { return this._call('uploadAnnouncement', obj); },
   deleteAnn(obj)     { return this._call('deleteAnnouncement', obj); },
   generatePdf(obj)   { return this._call('generateSummaryPdf', obj); },
-  sendPush(obj)      { return this._call('sendPush', obj); }
+  sendPush(obj)      { return this._call('sendPush', obj); },
+  getBudget()        { return this._call('getBudget'); },
+  saveBudget(obj)    { return this._call('saveBudget', obj); }
 };
 
 // ============================================================
@@ -849,6 +853,143 @@ function showSummaryModal() {
 // ============================================================
 // RENDER: หน้าแรก (Welcome) — แบ่ง 2 ฝั่ง
 // ============================================================
+// ─── สรุปงบประมาณ (ค่าตั้งต้น — จะถูกแทนที่ด้วยข้อมูลล่าสุดจาก GAS ถ้าเจ้าหน้าที่เคยอัปโหลดไว้) ───
+let BUDGET_SUMMARY = {
+  updated: '16 ก.ย. 2569', year: '2569',
+  total: 17380088.38, used: 15286393.89,
+  cats: [
+    { label:'งบลงทุน',        b:11116471.64, u:11116471.64, color:'#ff9f43' },
+    { label:'งบเงินอุดหนุน',  b:1823909.84,  u:722678.84,   color:'#17c3d4' },
+    { label:'งบบุคลากร',      b:1584540.00,  u:1614910.00,  color:'#ff6b9d' },
+    { label:'งบรายจ่ายอื่น',  b:1485300.00,  u:839800.84,   color:'#9b6dff' },
+    { label:'งบดำเนินงาน',    b:1369866.90,  u:992532.57,   color:'#2fd18f' },
+  ]
+};
+// ─── ตัวอ่าน/อัปโหลดไฟล์ Excel งบประมาณ NFMA55 (เฉพาะเจ้าหน้าที่) ───
+const BUDGET_COLORS = {'ลงทุน':'#ff9f43','เงินอุดหนุน':'#17c3d4','บุคลากร':'#ff6b9d','รายจ่ายอื่น':'#9b6dff','ดำเนินงาน':'#2fd18f'};
+const BUDGET_CATMAP = {'1':'บุคลากร','2':'ดำเนินงาน','3':'ลงทุน','4':'เงินอุดหนุน','5':'รายจ่ายอื่น'};
+const BUDGET_LABELS = {'บุคลากร':'งบบุคลากร','ดำเนินงาน':'งบดำเนินงาน','ลงทุน':'งบลงทุน','เงินอุดหนุน':'งบเงินอุดหนุน','รายจ่ายอื่น':'งบรายจ่ายอื่น'};
+function parseBudgetXlsx_(buf) {
+  const wb = XLSX.read(buf, {type:'array'});
+  const ws = wb.Sheets[wb.SheetNames[0]];
+  const rows = XLSX.utils.sheet_to_json(ws, {header:1, raw:true, defval:''});
+  const agg = {}; let year = '';
+  for (const r of rows) {
+    if (!r || r.length < 11) continue;
+    const y = String(r[0]).trim();
+    if (!/^\d{4}$/.test(y)) continue;                 // แถวข้อมูล = คอลัมน์แรกเป็นปี
+    const name = String(r[3]||'').trim();
+    if (!name || name.charAt(0)==='*') continue;      // ข้ามแถวผลรวม
+    year = y;
+    const key = BUDGET_CATMAP[String(r[4]||'').charAt(4)] || 'รายจ่ายอื่น';
+    const b = Number(r[8])||0, u = Number(r[9])||0;
+    if (b===0 && u===0) continue;
+    if (!agg[key]) agg[key] = {b:0, u:0};
+    agg[key].b += b; agg[key].u += u;
+  }
+  const order = ['ลงทุน','เงินอุดหนุน','บุคลากร','รายจ่ายอื่น','ดำเนินงาน'];
+  const cats = order.filter(k=>agg[k]).map(k=>({ label:BUDGET_LABELS[k], b:agg[k].b, u:agg[k].u, color:BUDGET_COLORS[k] }));
+  const total = cats.reduce((s,c)=>s+c.b,0), used = cats.reduce((s,c)=>s+c.u,0);
+  const M = ['ม.ค.','ก.พ.','มี.ค.','เม.ย.','พ.ค.','มิ.ย.','ก.ค.','ส.ค.','ก.ย.','ต.ค.','พ.ย.','ธ.ค.'], now = new Date();
+  return { year: year||BUDGET_SUMMARY.year, updated: now.getDate()+' '+M[now.getMonth()]+' '+(now.getFullYear()+543), total, used, cats };
+}
+function handleBudgetUpload_(file) {
+  if (typeof XLSX === 'undefined') { showToast('❌ โหลดตัวอ่าน Excel ไม่ได้ ลองรีเฟรช', 'error'); return; }
+  const rd = new FileReader();
+  rd.onload = async () => {
+    try {
+      const bud = parseBudgetXlsx_(rd.result);
+      if (!bud.cats.length) { showToast('❌ ไม่พบข้อมูลงบในไฟล์ (ตรวจว่าเป็นรายงาน NFMA55)', 'error'); return; }
+      showToast('⏳ กำลังบันทึกงบประมาณ...');
+      const res = await GAS.saveBudget(bud);
+      if (res.ok) { BUDGET_SUMMARY = bud; showToast('✅ อัปเดตงบประมาณสำเร็จ'); render(); }
+      else showToast('❌ บันทึกไม่สำเร็จ: ' + (res.error||''), 'error');
+    } catch (err) { showToast('❌ ' + err.message, 'error'); }
+  };
+  rd.readAsArrayBuffer(file);
+}
+
+// โดนัทงบประมาณแบบ conic-gradient (ไม่ต้องใช้ไลบรารีกราฟ) — ใช้ไปกี่ % แยกตามหมวด
+function buildBudgetDonut_() {
+  const S = BUDGET_SUMMARY;
+  const totalUsed = S.cats.reduce((a,c)=>a+(c.u||0),0) || 1;
+  let acc = 0;
+  const stops = S.cats.map(c => { const from = acc/totalUsed*100; acc += (c.u||0); const to = acc/totalUsed*100; return `${c.color} ${from}% ${to}%`; }).join(', ');
+  const legend = S.cats.map(c => `<div style="display:flex;align-items:center;gap:6px;font-size:${CONFIG.font_size*.72}px;">
+      <span style="width:10px;height:10px;border-radius:3px;background:${c.color};flex:none;"></span>
+      <span style="flex:1;min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;color:${CONFIG.text_color};">${c.label}</span>
+      <span style="font-weight:700;color:${CONFIG.text_color};opacity:.6;">${((c.u||0)/totalUsed*100).toFixed(0)}%</span></div>`).join('');
+  return `
+    <div class="rounded-2xl p-4 mt-4" style="background-color:${CONFIG.background_color};">
+      <p class="font-bold mb-3" style="font-family:${CONFIG.font_family};font-size:${CONFIG.font_size*.92}px;color:${CONFIG.text_color};">💰 เบิกจ่ายแล้ว แยกตามงบ ${S.year}</p>
+      <div style="display:flex;gap:14px;align-items:center;">
+        <div style="position:relative;width:116px;height:116px;flex:none;border-radius:50%;background:conic-gradient(${stops});box-shadow:0 4px 12px rgba(0,0,0,.12);">
+          <div style="position:absolute;inset:21px;border-radius:50%;background:${CONFIG.surface_color};display:flex;flex-direction:column;align-items:center;justify-content:center;">
+            <span style="font-family:${CONFIG.font_family};font-size:${CONFIG.font_size*.6}px;color:${CONFIG.text_color};opacity:.6;">ใช้ไปแล้ว</span>
+            <span style="font-family:${CONFIG.font_family};font-weight:800;font-size:${CONFIG.font_size*.98}px;color:${CONFIG.primary_color};line-height:1.1;">${(totalUsed/1e6).toFixed(2)} ล.</span>
+          </div>
+        </div>
+        <div style="flex:1;min-width:0;display:flex;flex-direction:column;gap:5px;">${legend}</div>
+      </div>
+      <p class="mt-3 text-center" style="font-family:${CONFIG.font_family};font-size:${CONFIG.font_size*.75}px;color:${CONFIG.text_color};opacity:.6;">ใช้ไป ${totalUsed.toLocaleString('th-TH')} บาท · ณ ${S.updated}</p>
+    </div>`;
+}
+
+// แผงงบประมาณแบบเต็ม (ใช้ในหน้าหลังล็อกอิน — เจ้าหน้าที่/ดูสถานะ): โดนัท + แท่งแยกหมวด + KPI
+function buildBudgetPanel_() {
+  const S = BUDGET_SUMMARY, total = S.total, used = S.used, remain = total - used;
+  const usedPct = (used/total*100).toFixed(1);
+  let acc = 0;
+  const stops = S.cats.map(c => { const f = acc/total*100; acc += c.b; return `${c.color} ${f}% ${acc/total*100}%`; }).join(', ');
+  const bars = S.cats.map(c => { const p = c.b/total*100; return `
+    <div>
+      <div style="display:flex;justify-content:space-between;gap:8px;font-size:${CONFIG.font_size*.82}px;margin-bottom:3px;">
+        <span style="display:flex;align-items:center;gap:7px;min-width:0;"><span style="width:11px;height:11px;border-radius:3px;background:${c.color};flex:none;"></span><span style="white-space:nowrap;overflow:hidden;text-overflow:ellipsis;color:${CONFIG.text_color};font-weight:600;">${c.label}</span></span>
+        <span style="white-space:nowrap;color:${CONFIG.text_color};"><b>${c.b.toLocaleString('th-TH')}</b> <span style="opacity:.55;">${p.toFixed(1)}%</span></span>
+      </div>
+      <div style="height:8px;border-radius:99px;background:${CONFIG.background_color};overflow:hidden;"><i style="display:block;height:100%;width:${p}%;background:${c.color};border-radius:99px;"></i></div>
+    </div>`; }).join('');
+  const kpi = (label, val, color) => `<div style="flex:1;min-width:130px;background:${CONFIG.background_color};border-radius:14px;padding:12px 14px;">
+     <div style="font-size:${CONFIG.font_size*.78}px;color:${CONFIG.text_color};opacity:.65;">${label}</div>
+     <div class="num" style="font-family:${CONFIG.font_family};font-weight:800;font-size:${CONFIG.font_size*1.1}px;color:${color};">${val}</div></div>`;
+  return `
+  <div class="rounded-2xl p-4 md:p-6 shadow-lg mb-6" style="background-color:${CONFIG.surface_color};">
+    <div class="flex items-center justify-between gap-3 mb-4 flex-wrap">
+      <h2 class="font-bold flex items-center gap-2" style="font-family:${CONFIG.font_family};font-size:${CONFIG.font_size*1.3}px;color:${CONFIG.text_color};">💰 ภาพรวมงบประมาณ ${S.year}</h2>
+      <span style="font-size:${CONFIG.font_size*.78}px;color:${CONFIG.text_color};opacity:.55;">รายงาน NFMA55 · ณ ${S.updated}</span>
+    </div>
+    <div style="display:flex;gap:22px;align-items:center;flex-wrap:wrap;">
+      <div style="position:relative;width:150px;height:150px;flex:none;border-radius:50%;background:conic-gradient(${stops});box-shadow:0 6px 18px rgba(0,0,0,.12);">
+        <div style="position:absolute;inset:27px;border-radius:50%;background:${CONFIG.surface_color};display:flex;flex-direction:column;align-items:center;justify-content:center;">
+          <span style="font-family:${CONFIG.font_family};font-size:${CONFIG.font_size*.68}px;color:${CONFIG.text_color};opacity:.6;">เบิกจ่ายแล้ว</span>
+          <span style="font-family:${CONFIG.font_family};font-weight:800;font-size:${CONFIG.font_size*1.6}px;color:${CONFIG.primary_color};line-height:1;">${usedPct}%</span>
+        </div>
+      </div>
+      <div style="flex:1;min-width:240px;display:flex;flex-direction:column;gap:9px;">${bars}</div>
+    </div>
+    <div style="display:flex;gap:10px;flex-wrap:wrap;margin-top:16px;">
+      ${kpi('งบประมาณทั้งหมด', total.toLocaleString('th-TH',{minimumFractionDigits:2}) + ' บาท', CONFIG.text_color)}
+      ${kpi('เบิกจ่ายแล้ว', used.toLocaleString('th-TH',{minimumFractionDigits:2}) + ' บาท', CONFIG.primary_color)}
+      ${kpi('คงเหลือ', remain.toLocaleString('th-TH',{minimumFractionDigits:2}) + ' บาท', '#059669')}
+    </div>
+  </div>`;
+}
+
+// popup แสดงแผงงบประมาณ (กดจากปุ่ม 💰 งบประมาณ หลังล็อกอิน)
+function showBudgetModal() {
+  const modal = document.createElement('div');
+  modal.className = 'fixed inset-0 flex items-center justify-center z-50 p-4';
+  modal.style.backgroundColor = 'rgba(0,0,0,0.6)';
+  modal.innerHTML = `
+    <div class="w-full card-animate" style="max-width:720px;max-height:90vh;overflow-y:auto;">
+      ${buildBudgetPanel_()}
+      <button id="closeBudgetBtn" class="w-full py-3 rounded-xl font-bold text-white btn-hover" style="font-family:${CONFIG.font_family};background-color:${CONFIG.primary_color};margin-top:-8px;">ปิด</button>
+    </div>`;
+  document.body.appendChild(modal);
+  modal.addEventListener('click', e => { if (e.target === modal) modal.remove(); });
+  document.getElementById('closeBudgetBtn').onclick = () => modal.remove();
+}
+
 function renderWelcome() {
   // ── ฝั่งขวาบน: การ์ดประกาศ ──
   const annCards = announcements.length === 0
@@ -913,7 +1054,7 @@ function renderWelcome() {
                 <p style="font-family:${CONFIG.font_family};font-size:${CONFIG.font_size*.72}px;color:#991b1b;line-height:1.5;">⚠️ ข้อมูลทั้งหมดในระบบนี้เป็นข้อมูลภายในของวิทยาลัยฯ ห้ามคัดลอก ดัดแปลง หรือเผยแพร่โดยไม่ได้รับอนุญาต มีความผิดและมีผลทางกฎหมาย</p>
               </div>
             </div>
-            <div class="flex-1 flex flex-col justify-end">
+            <div class="flex flex-col">
               <div id="menuSection" class="space-y-3">
                 <button id="viewPublicBtn" class="w-full btn-hover py-3.5 rounded-xl font-bold text-white" style="font-family:${CONFIG.font_family};font-size:${CONFIG.font_size}px;background:linear-gradient(135deg,${CONFIG.primary_color},${CONFIG.accent_color});">🔍 ติดตามสถานะเอกสาร</button>
                 <button id="loginStaffBtn" class="w-full btn-hover py-3.5 rounded-xl font-bold" style="font-family:${CONFIG.font_family};font-size:${CONFIG.font_size}px;color:${CONFIG.text_color};background-color:${CONFIG.background_color};">🔐 เข้าสู่ระบบเจ้าหน้าที่</button>
@@ -938,6 +1079,7 @@ function renderWelcome() {
                 <button id="doPasscodeBtn" class="w-full btn-hover py-3.5 rounded-xl font-bold text-white" style="font-family:${CONFIG.font_family};background:linear-gradient(135deg,${CONFIG.primary_color},${CONFIG.accent_color});">เข้าดูสถานะ</button>
                 <button id="backFromPasscodeBtn" class="w-full btn-hover py-3 rounded-xl font-medium" style="font-family:${CONFIG.font_family};font-size:${CONFIG.font_size*.9}px;color:${CONFIG.text_color};background-color:${CONFIG.background_color};">← กลับ</button>
               </div>
+              ${buildBudgetDonut_()}
             </div>
           </div>
         </div>
@@ -1155,11 +1297,17 @@ function renderStatusSummary(isStaff) {
   const activeOptions = STATUS_OPTIONS.filter(s => s.id !== 6);
   const btnClass = isStaff ? 'status-category-btn' : 'status-category-btn-public';
   const xbtn = 'px-3 md:px-6 py-2 md:py-3 rounded-xl font-bold text-white btn-hover text-sm md:text-base';
+  const budgetBtnHtml = `<button id="budgetBtn" class="${xbtn}" style="font-family:${CONFIG.font_family};background:linear-gradient(135deg,#ff9f43,#f97316);">💰 งบประมาณ</button>`;
+  // ปุ่มอัปโหลด Excel งบ — เฉพาะเจ้าหน้าที่ (อยู่ข้างปุ่มงบประมาณ)
+  const budgetUploadHtml = `<button id="budgetUploadBtn" class="${xbtn}" style="font-family:${CONFIG.font_family};background:linear-gradient(135deg,#0891b2,#0e7490);">⬆️ อัปโหลดงบ (Excel)</button><input type="file" id="budgetFile" accept=".xlsx,.xls" hidden>`;
   const extraBtns = isStaff ? `
+    ${budgetBtnHtml}
+    ${budgetUploadHtml}
     <button id="manageAnnBtn" class="${xbtn}" style="font-family:${CONFIG.font_family};background:linear-gradient(135deg,#8b5cf6,#6366f1);">📢 จัดการประกาศ</button>
     <button id="importDataBtn" class="${xbtn}" style="font-family:${CONFIG.font_family};background:linear-gradient(135deg,#10b981,#059669);">🔄 รีเฟรช</button>
     <button id="summaryBtn"    class="${xbtn}" style="font-family:${CONFIG.font_family};background:linear-gradient(135deg,${CONFIG.accent_color},${CONFIG.primary_color});">📸 รายงานสรุป</button>`
-    : `<button id="summaryBtn" class="${xbtn}" style="font-family:${CONFIG.font_family};background:linear-gradient(135deg,${CONFIG.accent_color},${CONFIG.primary_color});">📸 รายงานสรุป</button>`;
+    : `${budgetBtnHtml}
+    <button id="summaryBtn" class="${xbtn}" style="font-family:${CONFIG.font_family};background:linear-gradient(135deg,${CONFIG.accent_color},${CONFIG.primary_color});">📸 รายงานสรุป</button>`;
   return `
     <div class="rounded-2xl p-4 md:p-6 shadow-lg mb-6" style="background-color:${CONFIG.surface_color};">
       <div class="flex justify-between items-center mb-4 gap-3 flex-wrap">
@@ -1771,6 +1919,12 @@ function attachStaffHandlers() {
   };
 
   document.getElementById('summaryBtn').onclick    = () => showSummaryModal();
+  document.getElementById('budgetBtn').onclick     = () => showBudgetModal();
+  const upBtn = document.getElementById('budgetUploadBtn'), upFile = document.getElementById('budgetFile');
+  if (upBtn && upFile) {
+    upBtn.onclick = () => upFile.click();
+    upFile.onchange = e => { const f = e.target.files[0]; if (f) handleBudgetUpload_(f); e.target.value = ''; };
+  }
   document.getElementById('manageAnnBtn').onclick  = () => showAnnManageModal();
   document.getElementById('importDataBtn').onclick = () => {
     showToast('🔄 กำลังรีเฟรชข้อมูล...');
@@ -1938,6 +2092,8 @@ function attachPublicHandlers() {
   document.getElementById('backHomeBtn').onclick = () => { clearInterval(clockInterval); authCredential = null; currentScreen = 'welcome'; render(); refreshData('welcome'); };
   const sb = document.getElementById('summaryBtn');
   if (sb) sb.onclick = () => showSummaryModal();
+  const bb = document.getElementById('budgetBtn');
+  if (bb) bb.onclick = () => showBudgetModal();
 }
 
 // ============================================================
@@ -1953,6 +2109,15 @@ async function init() {
   } catch(e) {
     console.warn('Init data load failed:', e);
   }
+
+  // โหลดงบประมาณล่าสุดที่เจ้าหน้าที่เคยอัปโหลด (ถ้ามี) แล้ววาดใหม่ — ไม่ block หน้าแรก
+  try {
+    const res = await GAS.getBudget();
+    if (res && res.ok && res.budget && res.budget.cats && res.budget.cats.length) {
+      BUDGET_SUMMARY = res.budget;
+      render();
+    }
+  } catch(e) { console.warn('Load budget failed:', e); }
 }
 
 init();
