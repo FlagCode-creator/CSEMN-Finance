@@ -873,7 +873,7 @@ function parseBudgetXlsx_(buf) {
   const wb = XLSX.read(buf, {type:'array'});
   const ws = wb.Sheets[wb.SheetNames[0]];
   const rows = XLSX.utils.sheet_to_json(ws, {header:1, raw:true, defval:''});
-  const agg = {}; let year = '';
+  const agg = {}; const items = []; let year = '';
   for (const r of rows) {
     if (!r || r.length < 11) continue;
     const y = String(r[0]).trim();
@@ -881,17 +881,19 @@ function parseBudgetXlsx_(buf) {
     const name = String(r[3]||'').trim();
     if (!name || name.charAt(0)==='*') continue;      // ข้ามแถวผลรวม
     year = y;
-    const key = BUDGET_CATMAP[String(r[4]||'').charAt(4)] || 'รายจ่ายอื่น';
+    const src = String(r[4]||'');
+    const key = BUDGET_CATMAP[src.charAt(4)] || 'รายจ่ายอื่น';
     const b = Number(r[8])||0, u = Number(r[9])||0;
     if (b===0 && u===0) continue;
     if (!agg[key]) agg[key] = {b:0, u:0};
     agg[key].b += b; agg[key].u += u;
+    items.push({ n:name, c:key, b, u, carry: src.slice(0,2)==='68' }); // เก็บรายการย่อยไว้ให้หน้า budget.html
   }
   const order = ['ลงทุน','เงินอุดหนุน','บุคลากร','รายจ่ายอื่น','ดำเนินงาน'];
   const cats = order.filter(k=>agg[k]).map(k=>({ label:BUDGET_LABELS[k], b:agg[k].b, u:agg[k].u, color:BUDGET_COLORS[k] }));
   const total = cats.reduce((s,c)=>s+c.b,0), used = cats.reduce((s,c)=>s+c.u,0);
   const M = ['ม.ค.','ก.พ.','มี.ค.','เม.ย.','พ.ค.','มิ.ย.','ก.ค.','ส.ค.','ก.ย.','ต.ค.','พ.ย.','ธ.ค.'], now = new Date();
-  return { year: year||BUDGET_SUMMARY.year, updated: now.getDate()+' '+M[now.getMonth()]+' '+(now.getFullYear()+543), total, used, cats };
+  return { year: year||BUDGET_SUMMARY.year, updated: now.getDate()+' '+M[now.getMonth()]+' '+(now.getFullYear()+543), total, used, cats, items };
 }
 function handleBudgetUpload_(file) {
   if (typeof XLSX === 'undefined') { showToast('❌ โหลดตัวอ่าน Excel ไม่ได้ ลองรีเฟรช', 'error'); return; }
@@ -1919,7 +1921,7 @@ function attachStaffHandlers() {
   };
 
   document.getElementById('summaryBtn').onclick    = () => showSummaryModal();
-  document.getElementById('budgetBtn').onclick     = () => showBudgetModal();
+  document.getElementById('budgetBtn').onclick     = () => { location.href = 'budget.html'; };
   const upBtn = document.getElementById('budgetUploadBtn'), upFile = document.getElementById('budgetFile');
   if (upBtn && upFile) {
     upBtn.onclick = () => upFile.click();
@@ -2093,7 +2095,7 @@ function attachPublicHandlers() {
   const sb = document.getElementById('summaryBtn');
   if (sb) sb.onclick = () => showSummaryModal();
   const bb = document.getElementById('budgetBtn');
-  if (bb) bb.onclick = () => showBudgetModal();
+  if (bb) bb.onclick = () => { location.href = 'budget.html'; };
 }
 
 // ============================================================
