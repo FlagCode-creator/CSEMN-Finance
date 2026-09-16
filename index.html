@@ -873,6 +873,7 @@ let budgetItemsFilter = 'all';   // ตัวกรองหมวดในต�
 const BUDGET_COLORS = {'ลงทุน':'#ff9f43','เงินอุดหนุน':'#17c3d4','บุคลากร':'#ff6b9d','รายจ่ายอื่น':'#9b6dff','ดำเนินงาน':'#2fd18f'};
 const BUDGET_CATMAP = {'1':'บุคลากร','2':'ดำเนินงาน','3':'ลงทุน','4':'เงินอุดหนุน','5':'รายจ่ายอื่น'};
 const BUDGET_LABELS = {'บุคลากร':'งบบุคลากร','ดำเนินงาน':'งบดำเนินงาน','ลงทุน':'งบลงทุน','เงินอุดหนุน':'งบเงินอุดหนุน','รายจ่ายอื่น':'งบรายจ่ายอื่น'};
+function baht(n){ return (Number(n)||0).toLocaleString('th-TH',{minimumFractionDigits:2,maximumFractionDigits:2}); }
 function parseBudgetXlsx_(buf) {
   const wb = XLSX.read(buf, {type:'array'});
   const ws = wb.Sheets[wb.SheetNames[0]];
