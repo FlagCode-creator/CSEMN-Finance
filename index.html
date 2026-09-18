@@ -10,12 +10,16 @@
   <meta name="apple-mobile-web-app-capable" content="yes">
   <meta name="apple-mobile-web-app-status-bar-style" content="default">
   <link rel="apple-touch-icon" href="icons/icon-192.png">
+  <!-- เชื่อมต่อล่วงหน้า (preconnect) ให้เริ่มดาวน์โหลดเร็วขึ้น -->
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link rel="preconnect" href="https://script.google.com">
+  <!-- Tailwind แบบคอมไพล์ล่วงหน้า (แทน Play CDN ที่คอมไพล์ในเบราว์เซอร์ทุกครั้ง) -->
+  <link rel="stylesheet" href="tailwind-mini.css">
   <!-- OneSignal Web Push SDK (ช่องทางแจ้งเตือนแยกจาก LINE) -->
   <script src="https://cdn.onesignal.com/sdks/web/v16/OneSignalSDK.page.js" defer></script>
-  <script src="https://cdn.tailwindcss.com"></script>
-  <!-- SheetJS: อ่านไฟล์ Excel งบประมาณ (เฉพาะปุ่มอัปโหลดของเจ้าหน้าที่) -->
-  <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
-  <link href="https://fonts.googleapis.com/css2?family=Sarabun:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+  <!-- SheetJS (861KB) โหลดเฉพาะตอนเจ้าหน้าที่กดอัปโหลด Excel (lazy) → หน้าเว็บ/มือถือเร็วขึ้นมาก -->
+  <link href="https://fonts.googleapis.com/css2?family=Sarabun:wght@400;600;700&display=swap" rel="stylesheet">
   <style>
     body { box-sizing: border-box; font-family: 'Sarabun', sans-serif; }
     .btn-hover { transition: all .3s ease; }
@@ -927,11 +931,27 @@ function parseBudgetXlsx_(buf) {
   const M = ['ม.ค.','ก.พ.','มี.ค.','เม.ย.','พ.ค.','มิ.ย.','ก.ค.','ส.ค.','ก.ย.','ต.ค.','พ.ย.','ธ.ค.'], now = new Date();
   return { year: year||BUDGET_SUMMARY.year, updated: now.getDate()+' '+M[now.getMonth()]+' '+(now.getFullYear()+543), total, used, cats, items };
 }
+// โหลด SheetJS แบบ on-demand (ครั้งแรกที่ใช้เท่านั้น) — กันหน้าเว็บอืดตอนเปิด
+let _xlsxLoading = null;
+function ensureXLSX_() {
+  if (typeof XLSX !== 'undefined') return Promise.resolve();
+  if (_xlsxLoading) return _xlsxLoading;
+  _xlsxLoading = new Promise((resolve, reject) => {
+    const s = document.createElement('script');
+    s.src = 'https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js';
+    s.onload = () => resolve();
+    s.onerror = () => { _xlsxLoading = null; reject(new Error('โหลดตัวอ่าน Excel ไม่ได้ (เช็คอินเทอร์เน็ต)')); };
+    document.head.appendChild(s);
+  });
+  return _xlsxLoading;
+}
+
 function handleBudgetUpload_(file) {
-  if (typeof XLSX === 'undefined') { showToast('❌ โหลดตัวอ่าน Excel ไม่ได้ ลองรีเฟรช', 'error'); return; }
   const rd = new FileReader();
   rd.onload = async () => {
     try {
+      showToast('⏳ กำลังเตรียมตัวอ่าน Excel...');
+      await ensureXLSX_();
       const bud = parseBudgetXlsx_(rd.result);
       if (!bud.cats.length) { showToast('❌ ไม่พบข้อมูลงบในไฟล์ (ตรวจว่าเป็นรายงาน NFMA55)', 'error'); return; }
       showToast('⏳ กำลังบันทึกงบประมาณ...');
