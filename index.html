@@ -15,13 +15,16 @@
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link rel="preconnect" href="https://script.google.com">
   <!-- Tailwind แบบคอมไพล์ล่วงหน้า (แทน Play CDN ที่คอมไพล์ในเบราว์เซอร์ทุกครั้ง) -->
-  <link rel="stylesheet" href="tailwind-mini.css">
+  <!-- ?v= : เปลี่ยนเลขทุกครั้งที่แก้ tailwind-mini.css (ให้ตรงกับ sw.js) กันเครื่องผู้ใช้ใช้ไฟล์แคชเก่า -->
+  <link rel="stylesheet" href="tailwind-mini.css?v=1">
   <!-- OneSignal Web Push SDK (ช่องทางแจ้งเตือนแยกจาก LINE) -->
   <script src="https://cdn.onesignal.com/sdks/web/v16/OneSignalSDK.page.js" defer></script>
   <!-- SheetJS (861KB) โหลดเฉพาะตอนเจ้าหน้าที่กดอัปโหลด Excel (lazy) → หน้าเว็บ/มือถือเร็วขึ้นมาก -->
   <link href="https://fonts.googleapis.com/css2?family=Sarabun:wght@400;600;700&display=swap" rel="stylesheet">
   <style>
     body { box-sizing: border-box; font-family: 'Sarabun', sans-serif; }
+    .loading-pulse { animation: loadPulse 1.2s ease-in-out infinite; }
+    @keyframes loadPulse { 0%,100% { opacity: 1; } 50% { opacity: .35; } }
     .btn-hover { transition: all .3s ease; }
     .btn-hover:hover { transform: translateY(-2px); box-shadow: 0 10px 20px rgba(0,0,0,.15); }
     .btn-hover:active { transform: translateY(0); }
@@ -118,6 +121,8 @@ let documents     = [];
 let debts         = [];
 let statusHistory = [];
 let announcements = [];
+let welcomeLoaded = false; // false = ยังไม่เคยได้ข้อมูลหน้าแรกเลย (แสดง "กำลังโหลด" แทนเลข 0)
+let refreshSeq    = 0;     // เลขลำดับการโหลด — ใช้ทิ้งผลลัพธ์เก่าที่มาถึงช้ากว่า
 let clockInterval = null;
 let docFilterType  = 'all';
 let docFilterDate  = '';
@@ -252,8 +257,52 @@ function sortDebts_(list) {
 }
 
 // level: 'welcome' (ก่อนกรอกรหัส) | 'basic' (ระดับดูเอกสาร) | 'full' (ระดับดูทั้งหมด / staff)
+// ─── แคชข้อมูลหน้าแรกในเครื่อง ───
+// เก็บเฉพาะตัวเลขสรุป + ประกาศ (ข้อมูลที่หน้าแรกเปิดให้ทุกคนเห็นอยู่แล้ว)
+// เปิดแอปแล้วเห็นข้อมูลล่าสุดทันที ไม่ต้องรอ GAS 3–6 วิ แล้วค่อยอัปเดตเบื้องหลัง
+// ห้ามแคชข้อมูลระดับ basic/full (รายการเอกสาร/ชื่อลูกหนี้) ลงเครื่องเด็ดขาด
+const WELCOME_CACHE_KEY = 'fdt_welcome_v1';
+const BUDGET_CACHE_KEY  = 'fdt_budget_v1';
+function cacheGet_(k) { try { return JSON.parse(localStorage.getItem(k) || 'null'); } catch (e) { return null; } }
+function cacheSet_(k, v) { try { localStorage.setItem(k, JSON.stringify(v)); } catch (e) {} }
+
+// ล้างข้อมูลระดับเจ้าหน้าที่ออกจากหน่วยความจำ (ตอนออกจากระบบ)
+function clearPrivateData_() {
+  allRecords = []; documents = []; debts = []; statusHistory = [];
+}
+
+// วาดหน้าจอใหม่โดยไม่ทำลายสิ่งที่ผู้ใช้กำลังกรอกบนหน้าแรก
+// (ข้อมูลจาก GAS มาถึงช้า ถ้าวาดทับตรงๆ ช่องรหัสที่พิมพ์อยู่จะหาย/ฟอร์มปิดเอง)
+function renderSafe_() {
+  if (currentScreen !== 'welcome') { render(); return; }
+  const g = id => document.getElementById(id);
+  const isOpen = id => g(id) && !g(id).classList.contains('hidden');
+  if ((g('doLoginBtn') && g('doLoginBtn').disabled) || (g('doPasscodeBtn') && g('doPasscodeBtn').disabled)) return; // กำลังตรวจรหัส — ห้ามวาดทับ
+  const st = {
+    pass: isOpen('passcodeSection'), login: isOpen('loginSection'),
+    code: g('publicPasscode') ? g('publicPasscode').value : '',
+    user: g('username') ? g('username').value : '',
+    pw:   g('password') ? g('password').value : '',
+    focus: document.activeElement ? document.activeElement.id : ''
+  };
+  render();
+  if (st.pass || st.login) {
+    g('menuSection').classList.add('hidden');
+    if (st.pass)  g('passcodeSection').classList.remove('hidden');
+    if (st.login) g('loginSection').classList.remove('hidden');
+  }
+  if (g('publicPasscode')) g('publicPasscode').value = st.code;
+  if (g('username')) g('username').value = st.user;
+  if (g('password')) g('password').value = st.pw;
+  if (st.focus && g(st.focus)) g(st.focus).focus();
+}
+
 function refreshData(level = 'full') {
+  const mySeq = ++refreshSeq;
   return GAS.getScoped({ level }).then(res => {
+    // มีการโหลดครั้งใหม่กว่าเกิดขึ้นแล้ว (เช่น ล็อกอินระหว่างรอหน้าแรก) → ทิ้งผลเก่า
+    // กันข้อมูลหน้าแรก (ค่าว่าง) มาทับข้อมูลเจ้าหน้าที่ที่โหลดเสร็จก่อน
+    if (mySeq !== refreshSeq) return;
     if (!res.ok) { showToast('❌ โหลดข้อมูลไม่สำเร็จ: ' + res.error, 'error'); return; }
     announcements = (res.announcements || []).sort((a,b) => new Date(b.created_at) - new Date(a.created_at));
     debtStats = res.debtStats || debtStats;
@@ -261,10 +310,9 @@ function refreshData(level = 'full') {
     if (level === 'welcome') {
       // หน้าแรก: ไม่มีรายละเอียดเอกสาร/ลูกหนี้ส่งมาเลย มีแค่ตัวเลขสรุป
       welcomeDocStatusCounts = res.docStatusCounts || welcomeDocStatusCounts;
-      allRecords = [];
-      documents  = [];
-      debts      = [];
-      statusHistory = [];
+      welcomeLoaded = true;
+      cacheSet_(WELCOME_CACHE_KEY, { t: Date.now(), docStatusCounts: welcomeDocStatusCounts, debtStats: debtStats, announcements: announcements });
+      clearPrivateData_();
     } else if (level === 'basic') {
       // เห็นเอกสารเต็ม แต่ debts ว่างเปล่า (เซิร์ฟเวอร์ไม่ส่งรายละเอียดมาให้ตั้งแต่ต้น)
       const docs = res.documents || [];
@@ -281,7 +329,7 @@ function refreshData(level = 'full') {
       debts      = sortDebts_(dbts);
       statusHistory = res.statusHistory || [];
     }
-    render();
+    renderSafe_();
   });
 }
 
@@ -956,7 +1004,7 @@ function handleBudgetUpload_(file) {
       if (!bud.cats.length) { showToast('❌ ไม่พบข้อมูลงบในไฟล์ (ตรวจว่าเป็นรายงาน NFMA55)', 'error'); return; }
       showToast('⏳ กำลังบันทึกงบประมาณ...');
       const res = await GAS.saveBudget(bud);
-      if (res.ok) { BUDGET_SUMMARY = bud; BUDGET_ITEMS = bud.items || BUDGET_ITEMS; showToast('✅ อัปเดตงบประมาณสำเร็จ'); render(); }
+      if (res.ok) { BUDGET_SUMMARY = bud; BUDGET_ITEMS = bud.items || BUDGET_ITEMS; cacheSet_(BUDGET_CACHE_KEY, bud); showToast('✅ อัปเดตงบประมาณสำเร็จ'); render(); }
       else showToast('❌ บันทึกไม่สำเร็จ: ' + (res.error||''), 'error');
     } catch (err) { showToast('❌ ' + err.message, 'error'); }
   };
@@ -1114,7 +1162,7 @@ function openBudgetScreen_() { budgetPrevScreen = currentScreen; budgetItemsFilt
 function renderWelcome() {
   // ── ฝั่งขวาบน: การ์ดประกาศ ──
   const annCards = announcements.length === 0
-    ? `<p class="text-center py-8" style="color:rgba(255,255,255,.7);font-family:${CONFIG.font_family};font-size:.9rem;">ยังไม่มีประกาศ</p>`
+    ? `<p class="text-center py-8 ${welcomeLoaded?'':'loading-pulse'}" style="color:rgba(255,255,255,.7);font-family:${CONFIG.font_family};font-size:.9rem;">${welcomeLoaded ? 'ยังไม่มีประกาศ' : '⏳ กำลังโหลดประกาศ...'}</p>`
     : announcements.map(ann => {
         const fileIcon = ann.file_type==='pdf' ? '📄' : ann.file_type==='docx' ? '📝' : '📎';
         const bgIcon   = ann.file_type==='pdf' ? '#fee2e2' : ann.file_type==='docx' ? '#dbeafe' : '#f3f4f6';
@@ -1138,11 +1186,13 @@ function renderWelcome() {
   const overdueDebts  = debtStats.overdue  || 0;
   const dueSoonDebts  = debtStats.dueSoon  || 0;
   const returnedDebts = debtStats.returned || 0;
+  // ยังไม่เคยได้ข้อมูลเลย → แสดง "…" กระพริบแทนเลข 0 (กันเข้าใจผิดว่าไม่มีข้อมูล/เว็บพัง)
+  const num = v => welcomeLoaded ? v : '<span class="loading-pulse">…</span>';
 
   const statusOverviewCards = activeStatuses.map(s => `
     <div class="rounded-xl p-3 text-center" style="background-color:${CONFIG.background_color};">
       <div style="font-size:1.3rem;">${s.icon}</div>
-      <div class="font-black" style="font-size:1.5rem;color:${s.color};">${statusCounts[s.id]||0}</div>
+      <div class="font-black" style="font-size:1.5rem;color:${s.color};">${num(statusCounts[s.id]||0)}</div>
       <div style="font-size:.65rem;color:${CONFIG.text_color};opacity:.75;font-family:${CONFIG.font_family};line-height:1.2;">${s.name}</div>
     </div>`).join('');
 
@@ -1154,7 +1204,7 @@ function renderWelcome() {
   ].map(([icon,val,color,label])=>`
     <div class="rounded-xl p-3 text-center" style="background-color:${CONFIG.background_color};">
       <div style="font-size:1.3rem;">${icon}</div>
-      <div class="font-black" style="font-size:1.5rem;color:${color};">${val}</div>
+      <div class="font-black" style="font-size:1.5rem;color:${color};">${num(val)}</div>
       <div style="font-size:.65rem;color:${CONFIG.text_color};opacity:.75;font-family:${CONFIG.font_family};">${label}</div>
     </div>`).join('');
 
@@ -2037,6 +2087,7 @@ function attachStaffHandlers() {
     clearInterval(clockInterval);
     pendingDocChanges = {};
     authCredential = null; // ล้างสิทธิ์ออกเมื่อออกจากระบบ
+    clearPrivateData_();   // ล้างรายการเอกสาร/ลูกหนี้ออกจากหน่วยความจำทันที
     currentScreen = 'welcome';
     render();
     refreshData('welcome'); // อัปเดตตัวเลขสรุปหน้าแรกใหม่ กันตัวเลขค้างจากตอนแก้ไขข้อมูล
@@ -2213,7 +2264,7 @@ function attachPublicHandlers() {
   attachDebtBudgetFilterHandler();
   attachDebtPaginationHandlers('Public');
   attachReturnedDebtsToggle('toggleReturnedDebtsBtnPublic');
-  document.getElementById('backHomeBtn').onclick = () => { clearInterval(clockInterval); authCredential = null; currentScreen = 'welcome'; render(); refreshData('welcome'); };
+  document.getElementById('backHomeBtn').onclick = () => { clearInterval(clockInterval); authCredential = null; clearPrivateData_(); currentScreen = 'welcome'; render(); refreshData('welcome'); };
   const sb = document.getElementById('summaryBtn');
   if (sb) sb.onclick = () => showSummaryModal();
   const bb = document.getElementById('budgetBtn');
@@ -2224,25 +2275,38 @@ function attachPublicHandlers() {
 // INIT
 // ============================================================
 async function init() {
-  render(); // แสดงหน้า Welcome ก่อน ไม่ block
-
-  try {
-    // หน้าแรกก่อนกรอกรหัสใดๆ: ขอแค่ตัวเลขสรุป + ประกาศ ไม่ขอรายละเอียดเอกสาร/ลูกหนี้เลย
-    // (ป้องกันไม่ให้ข้อมูลลูกหนี้รายบุคคลถูกส่งมาที่เบราว์เซอร์ก่อนมีการยืนยันสิทธิ์)
-    await refreshData('welcome');
-  } catch(e) {
-    console.warn('Init data load failed:', e);
+  // 1) แสดงข้อมูลล่าสุดที่เคยโหลดไว้ในเครื่องทันที (ถ้ามี) — ไม่ต้องรอเซิร์ฟเวอร์
+  const wc = cacheGet_(WELCOME_CACHE_KEY);
+  if (wc && wc.docStatusCounts) {
+    welcomeDocStatusCounts = wc.docStatusCounts;
+    debtStats     = wc.debtStats || debtStats;
+    announcements = wc.announcements || [];
+    welcomeLoaded = true;
   }
+  const bc = cacheGet_(BUDGET_CACHE_KEY);
+  if (bc && bc.cats && bc.cats.length) {
+    BUDGET_SUMMARY = bc;
+    if (bc.items && bc.items.length) BUDGET_ITEMS = bc.items;
+  }
+  render();
 
-  // โหลดงบประมาณล่าสุดที่เจ้าหน้าที่เคยอัปโหลด (ถ้ามี) แล้ววาดใหม่ — ไม่ block หน้าแรก
-  try {
-    const res = await GAS.getBudget();
+  // 2) โหลดของใหม่จาก GAS "พร้อมกัน" 2 คำขอ (เดิมต่อคิว ช้าเป็นสองเท่า)
+  // หน้าแรกก่อนกรอกรหัสใดๆ: ขอแค่ตัวเลขสรุป + ประกาศ ไม่ขอรายละเอียดเอกสาร/ลูกหนี้เลย
+  // (ป้องกันไม่ให้ข้อมูลลูกหนี้รายบุคคลถูกส่งมาที่เบราว์เซอร์ก่อนมีการยืนยันสิทธิ์)
+  const pData = refreshData('welcome').catch(e => console.warn('Init data load failed:', e));
+
+  // งบประมาณล่าสุดที่เจ้าหน้าที่เคยอัปโหลด (ถ้ามี)
+  const pBudget = GAS.getBudget().then(res => {
     if (res && res.ok && res.budget && res.budget.cats && res.budget.cats.length) {
       BUDGET_SUMMARY = res.budget;
       if (res.budget.items && res.budget.items.length) BUDGET_ITEMS = res.budget.items;
-      render();
+      cacheSet_(BUDGET_CACHE_KEY, res.budget);
+      // วาดใหม่เฉพาะหน้าที่แสดงงบ (หน้าแรก=โดนัท, หน้างบ) ไม่ไปรบกวนหน้าเจ้าหน้าที่
+      if (currentScreen === 'welcome' || currentScreen === 'budget') renderSafe_();
     }
-  } catch(e) { console.warn('Load budget failed:', e); }
+  }).catch(e => console.warn('Load budget failed:', e));
+
+  await Promise.all([pData, pBudget]);
 }
 
 init();
