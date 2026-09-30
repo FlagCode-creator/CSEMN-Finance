@@ -2315,13 +2315,23 @@ async function init() {
 init();
 
 // ─── ลงทะเบียน Service Worker (PWA) ───
-// ⚠️ ถ้าเปิด OneSignal ต้อง "ปล่อยให้ OneSignal เป็นคนลงทะเบียน sw.js เอง" (มันจะแนบ ?appId ที่จำเป็น)
-// ถ้าเราลงทะเบียนเองก่อน OneSignal จะลงทะเบียน worker ตัวเองไม่ได้ → subscribe ไม่ได้
-// จึงลง PWA worker เองเฉพาะตอน "ไม่ได้ใช้ OneSignal" เท่านั้น
+// OneSignal ลงทะเบียน sw.js เฉพาะตอนผู้ใช้กดเปิดแจ้งเตือน → เครื่องที่ไม่เปิดแจ้งเตือนจะไม่มี SW
+// (ไม่ได้แคชไฟล์ เปิดช้ากว่า) จึงลงทะเบียนเองให้ "เฉพาะเครื่องที่ยังไม่มี SW เลย"
+// ⚠️ ต้องใช้ URL แบบเดียวกับที่ OneSignal ใช้ (sw.js?appId=...&sdkVersion=...)
+//    เพราะ OneSignal ใน sw.js อ่าน appId จาก URL — ถ้าไม่มี ?appId จะ subscribe ไม่ได้
+//    เครื่องที่มี SW อยู่แล้ว (เปิดแจ้งเตือนไว้) จะไม่แตะเลย กันชนกับ push ที่ใช้งานอยู่
+const ONESIGNAL_SDK_VERSION = '160610'; // ตรงกับเวอร์ชันใน OneSignalSDK v16 (ถ้าไม่ตรง OneSignal จะอัปเดต SW เองตอนกดเปิดแจ้งเตือน)
 if ('serviceWorker' in navigator) {
-  window.addEventListener('load', () => {
-    if (ONESIGNAL_APP_ID) return; // ใช้ OneSignal → ให้มันลงทะเบียน sw.js เอง (sw.js มี PWA cache + push ในตัวเดียว)
-    navigator.serviceWorker.register('sw.js').catch(err => console.warn('SW register failed:', err));
+  window.addEventListener('load', async () => {
+    try {
+      const scope = new URL('./', location.href).href;
+      const existing = await navigator.serviceWorker.getRegistration(scope);
+      if (existing && existing.scope === scope) return; // มี SW แล้ว (ของ OneSignal หรือที่เคยลงไว้) — ไม่ยุ่ง
+      const url = ONESIGNAL_APP_ID
+        ? 'sw.js?appId=' + encodeURIComponent(ONESIGNAL_APP_ID) + '&sdkVersion=' + ONESIGNAL_SDK_VERSION
+        : 'sw.js';
+      await navigator.serviceWorker.register(url, { scope: './' });
+    } catch (err) { console.warn('SW register failed:', err); }
   });
 }
 
