@@ -91,16 +91,32 @@ const STATUS_OPTIONS = [
   { id: 6, name: 'เสร็จสิ้น จัดเก็บแล้ว',                                    color: '#6366f1', icon: '🗂️' }
 ];
 
-// ─── หมวดหมู่งบของลูกหนี้เงินยืม (เพิ่มงบใหม่ได้ในอนาคต แค่เติม object ในอาเรย์นี้) ───
-// ⚠️ ถ้าเพิ่ม/แก้ชื่องบ ต้องให้ 'name' ตรงกับ BUDGET_ORDER_ ใน Code.gs ด้วย (ใช้จัดกลุ่มในแจ้งเตือน)
-const BUDGET_OPTIONS = [
+// ─── หมวดหมู่ลูกหนี้เงินยืม ───
+// รายการจริงเก็บที่ GAS (เจ้าหน้าที่เพิ่ม/ลบได้จากปุ่ม "🏷️ หมวดลูกหนี้") และส่งมากับการโหลดข้อมูล
+// ค่าด้านล่างเป็นค่าเริ่มต้นระหว่างรอข้อมูลจากเซิร์ฟเวอร์เท่านั้น
+let BUDGET_OPTIONS = [
   { name: 'งบรายได้สถานศึกษา (บกศ.)', short: 'บกศ.',      color: '#0891b2' },
   { name: 'งบประมาณ',                  short: 'งบประมาณ', color: '#7c3aed' }
 ];
 const BUDGET_UNSET = 'ไม่ระบุงบ';
+const DEBT_CAT_PALETTE = ['#0891b2', '#7c3aed', '#db2777', '#ea580c', '#16a34a', '#2563eb', '#ca8a04', '#0d9488', '#9333ea', '#dc2626'];
 function budgetInfo_(name) {
-  return BUDGET_OPTIONS.find(b => b.name === name) ||
-         { name: BUDGET_UNSET, short: BUDGET_UNSET, color: '#94a3b8' };
+  const found = BUDGET_OPTIONS.find(b => b.name === name);
+  if (found) return found;
+  // หมวดที่ถูกลบไปแล้ว (ลูกหนี้ปีเก่ายังใช้ชื่อเดิม) → แสดงชื่อเดิมเป็นสีเทา
+  if (name && String(name).trim()) return { name, short: name, color: '#64748b' };
+  return { name: BUDGET_UNSET, short: BUDGET_UNSET, color: '#94a3b8' };
+}
+function setDebtCategories_(list) {
+  if (!Array.isArray(list) || !list.length) return;
+  BUDGET_OPTIONS = list.map((c, i) => ({
+    name: c.name, short: c.short || c.name,
+    color: /^#[0-9a-fA-F]{6}$/.test(c.color) ? c.color : DEBT_CAT_PALETTE[i % DEBT_CAT_PALETTE.length]
+  }));
+  // ตัวกรองค้างอยู่ที่หมวดที่ถูกลบ → กลับไป "ทุกงบ"
+  if (debtBudgetFilter !== 'all' && debtBudgetFilter !== BUDGET_UNSET && !BUDGET_OPTIONS.some(b => b.name === debtBudgetFilter)) {
+    debtBudgetFilter = 'all';
+  }
 }
 
 // ⚠️ ไม่เก็บรหัสผ่านไว้ในหน้าเว็บอีกต่อไป (เดิมเปิด View Source ก็เห็นรหัส)
@@ -122,6 +138,12 @@ let documents     = [];
 let debts         = [];
 let statusHistory = [];
 let announcements = [];
+// ─── ปีงบประมาณ ───
+// fyInfo.current = ปีงบปัจจุบัน (ชีตหลัก), fyInfo.archives = ปีเก่าที่ปิดแล้ว (เรียงใหม่→เก่า)
+// viewYear = null → ดูปีปัจจุบัน | ตัวเลขปี → กำลังดูปีเก่า (โหลดเฉพาะตอนกดเลือก)
+let fyInfo      = { current: null, archives: [] };
+let viewYear    = null;
+let yearLoading = false;
 let welcomeLoaded = false; // false = ยังไม่เคยได้ข้อมูลหน้าแรกเลย (แสดง "กำลังโหลด" แทนเลข 0)
 let refreshSeq    = 0;     // เลขลำดับการโหลด — ใช้ทิ้งผลลัพธ์เก่าที่มาถึงช้ากว่า
 let clockInterval = null;
@@ -156,6 +178,8 @@ const GAS_API_URL = 'https://script.google.com/macros/s/AKfycbyogCQK99QsSfdWntcu
 // action ที่เป็น "การอ่าน" → ส่งแบบ GET (เร็ว, ไม่ต้องมี body)
 // ที่เหลือเป็น "การเขียน" → ส่งแบบ POST (แนบ payload ใน body)
 const GAS_READ_ACTIONS = { getAllData: true, getScopedData: true, checkAuth: true, getBudget: true };
+// คำขอที่ทำกับข้อมูลรายปี (ตอนดูปีเก่า จะแนบ year ไปให้อัตโนมัติ)
+const GAS_YEAR_ACTIONS = { getScopedData: true, createRecord: true, updateRecord: true, deleteRecord: true, sendPush: true, generateSummaryPdf: true };
 
 const GAS = {
   _call(fnName, arg) {
@@ -166,6 +190,11 @@ const GAS = {
 
     // แนบข้อมูลยืนยันตัวตน (ถ้ามี) ให้ GAS ตรวจสิทธิ์ฝั่งเซิร์ฟเวอร์
     const authStr = authCredential ? JSON.stringify(authCredential) : undefined;
+
+    // กำลังดูปีงบเก่า → แนบปีไปด้วย ให้ GAS อ่าน/เขียนชีตของปีนั้น (และไม่ยิงแจ้งเตือน)
+    if (viewYear && GAS_YEAR_ACTIONS[fnName] && arg && typeof arg === 'object' && !Array.isArray(arg)) {
+      arg = { ...arg, year: viewYear };
+    }
 
     if (GAS_READ_ACTIONS[fnName]) {
       // ─── READ: GET …/exec?action=fnName&payload=<json>&auth=<json> ───
@@ -236,7 +265,9 @@ const GAS = {
   generatePdf(obj)   { return this._call('generateSummaryPdf', obj); },
   sendPush(obj)      { return this._call('sendPush', obj); },
   getBudget()        { return this._call('getBudget'); },
-  saveBudget(obj)    { return this._call('saveBudget', obj); }
+  saveBudget(obj)    { return this._call('saveBudget', obj); },
+  closeFiscalYear(obj)    { return this._call('closeFiscalYear', obj); },
+  saveDebtCategories(obj) { return this._call('saveDebtCategories', obj); }
 };
 
 // ============================================================
@@ -305,16 +336,19 @@ function refreshData(level = 'full') {
   return GAS.getScoped({ level }).then(res => {
     // มีการโหลดครั้งใหม่กว่าเกิดขึ้นแล้ว (เช่น ล็อกอินระหว่างรอหน้าแรก) → ทิ้งผลเก่า
     // กันข้อมูลหน้าแรก (ค่าว่าง) มาทับข้อมูลเจ้าหน้าที่ที่โหลดเสร็จก่อน
-    if (mySeq !== refreshSeq) return;
-    if (!res.ok) { showToast('❌ โหลดข้อมูลไม่สำเร็จ: ' + res.error, 'error'); return; }
+    if (mySeq !== refreshSeq) return false;
+    if (!res.ok) { showToast('❌ โหลดข้อมูลไม่สำเร็จ: ' + res.error, 'error'); return false; }
     announcements = (res.announcements || []).sort((a,b) => new Date(b.created_at) - new Date(a.created_at));
     debtStats = res.debtStats || debtStats;
+    if (res.fy) fyInfo = res.fy;                         // ปีงบปัจจุบัน + ปีเก่าที่มี (GAS ใหม่เท่านั้น)
+    if (res.debtCategories) setDebtCategories_(res.debtCategories);
 
     if (level === 'welcome') {
       // หน้าแรก: ไม่มีรายละเอียดเอกสาร/ลูกหนี้ส่งมาเลย มีแค่ตัวเลขสรุป
       welcomeDocStatusCounts = res.docStatusCounts || welcomeDocStatusCounts;
       welcomeLoaded = true;
-      cacheSet_(WELCOME_CACHE_KEY, { t: Date.now(), docStatusCounts: welcomeDocStatusCounts, debtStats: debtStats, announcements: announcements });
+      cacheSet_(WELCOME_CACHE_KEY, { t: Date.now(), docStatusCounts: welcomeDocStatusCounts, debtStats: debtStats, announcements: announcements,
+                                     fy: fyInfo, debtCategories: BUDGET_OPTIONS });
       clearPrivateData_();
     } else if (level === 'basic') {
       // เห็นเอกสารเต็ม แต่ debts ว่างเปล่า (เซิร์ฟเวอร์ไม่ส่งรายละเอียดมาให้ตั้งแต่ต้น)
@@ -333,6 +367,38 @@ function refreshData(level = 'full') {
       statusHistory = res.statusHistory || [];
     }
     renderSafe_();
+    return true;
+  });
+}
+
+// ระดับข้อมูลที่หน้าจอปัจจุบันควรเห็น (ใช้ตอนสลับปีงบ)
+function currentLevel_() {
+  if (currentScreen === 'staff') return 'full';
+  if (currentScreen === 'public') return publicAccessLevel;
+  return 'welcome';
+}
+
+// สลับปีงบที่กำลังดู — โหลดข้อมูลปีนั้น "เฉพาะตอนกดเลือก" เท่านั้น
+function switchYear_(year) {
+  const target = (!year || year === fyInfo.current) ? null : year;
+  if (target === viewYear || yearLoading) return;
+  if (currentScreen === 'staff' && Object.keys(pendingDocChanges).length) {
+    showToast('⚠️ มีการเปลี่ยนสถานะที่ยังไม่บันทึก กรุณาบันทึกหรือยกเลิกก่อนเปลี่ยนปี', 'error');
+    return;
+  }
+  const prev = viewYear;
+  viewYear = target;
+  docCurrentPage = 1; debtCurrentPage = 1;
+  clearPrivateData_();
+  yearLoading = true;
+  render();
+  refreshData(currentLevel_()).then(ok => {
+    yearLoading = false;
+    if (!ok && viewYear === target && target !== null) {
+      viewYear = prev; // โหลดปีที่เลือกไม่ได้ → กลับปีเดิม
+      refreshData(currentLevel_());
+    }
+    render();
   });
 }
 
@@ -1274,7 +1340,7 @@ function renderWelcome() {
           <div class="rounded-2xl p-5 card-animate shadow-lg" style="background-color:${CONFIG.surface_color};">
             <div class="flex items-center gap-2 mb-3">
               <span>📊</span>
-              <h2 class="font-bold" style="font-family:${CONFIG.font_family};font-size:${CONFIG.font_size*1.1}px;color:${CONFIG.text_color};">ภาพรวมสถานะเอกสารและลูกหนี้</h2>
+              <h2 class="font-bold" style="font-family:${CONFIG.font_family};font-size:${CONFIG.font_size*1.1}px;color:${CONFIG.text_color};">ภาพรวมสถานะเอกสารและลูกหนี้${fyInfo.current ? ` <span style="font-weight:600;opacity:.6;font-size:.85em;">· ปีงบ ${fyInfo.current}</span>` : ''}</h2>
             </div>
             <p class="text-xs mb-2 font-medium" style="color:${CONFIG.text_color};opacity:.6;font-family:${CONFIG.font_family};">สถานะเอกสาร (ไม่รวมที่จัดเก็บแล้ว)</p>
             <div class="grid grid-cols-3 sm:grid-cols-5 gap-2 mb-4">${statusOverviewCards}</div>
@@ -1390,6 +1456,7 @@ function renderDebtCard(debt, isStaff) {
       </select>
       <select class="update-debt-budget px-3 py-2 rounded-xl border-2 text-sm font-bold" data-id="${debt.__backendId}" style="border-color:${bi.color};">
         ${BUDGET_OPTIONS.map(b=>`<option value="${b.name}" ${debt.budget===b.name?'selected':''}>🏷️ ${b.short}</option>`).join('')}
+        ${debt.budget && !BUDGET_OPTIONS.some(b => b.name === debt.budget) ? `<option value="${escHtml_(debt.budget)}" selected>🏷️ ${escHtml_(debt.budget)} (หมวดเก่า)</option>` : ''}
         <option value="" ${!debt.budget?'selected':''}>🏷️ ${BUDGET_UNSET}</option>
       </select>
       <button class="delete-debt px-3 py-2 rounded-xl text-sm font-bold text-white btn-hover" data-id="${debt.__backendId}" style="background-color:#ef4444;">🗑️ ลบ</button>
@@ -1550,6 +1617,220 @@ function renderDebtBudgetFilter(id) {
     </select>`;
 }
 
+function escHtml_(s) {
+  return String(s == null ? '' : s).replace(/[&<>"']/g, c => ({ '&':'&amp;', '<':'&lt;', '>':'&gt;', '"':'&quot;', "'":'&#39;' }[c]));
+}
+
+// ─── แถบปีงบประมาณ (หน้าเจ้าหน้าที่ + หน้าดูสถานะ) ───
+// ปุ่มปีเก่าแค่แสดงไว้ — ข้อมูลปีนั้นโหลดเมื่อกดเท่านั้น
+function renderYearBar_(isStaff) {
+  if (!fyInfo.current) return ''; // GAS ยังเป็นเวอร์ชันเก่า (ไม่มีระบบปีงบ) → ไม่แสดง
+  const years  = [fyInfo.current, ...(fyInfo.archives || []).filter(y => y !== fyInfo.current)];
+  const active = viewYear || fyInfo.current;
+  const chip = y => {
+    const on = y === active, isCur = y === fyInfo.current;
+    const col = isCur ? CONFIG.primary_color : '#d97706';
+    return `<button class="fy-chip px-4 py-2 rounded-xl font-bold btn-hover text-sm" data-year="${y}" style="font-family:${CONFIG.font_family};border:2px solid ${on ? col : '#e2e8f0'};background-color:${on ? col : CONFIG.surface_color};color:${on ? '#fff' : CONFIG.text_color};">${isCur ? '📅' : '📁'} ${y}${isCur ? ' (ปัจจุบัน)' : ''}</button>`;
+  };
+  const loading = yearLoading
+    ? `<span class="loading-pulse font-bold text-sm" style="font-family:${CONFIG.font_family};color:${CONFIG.text_color};">⏳ กำลังโหลดข้อมูลปีงบ ${active}...</span>` : '';
+  const closeBtn = (isStaff && !viewYear)
+    ? `<button id="closeFyBtn" class="px-4 py-2 rounded-xl font-bold btn-hover text-sm" style="font-family:${CONFIG.font_family};border:2px solid #dc2626;color:#dc2626;background-color:${CONFIG.surface_color};">🗓️ ปิดปีงบ ${fyInfo.current}</button>` : '';
+  const archiveNote = viewYear ? `
+    <div class="rounded-xl p-3 mt-3 flex items-center justify-between gap-3 flex-wrap" style="background-color:#fef3c7;">
+      <span class="font-bold" style="font-family:${CONFIG.font_family};font-size:${CONFIG.font_size*.9}px;color:#92400e;">📁 กำลังดูข้อมูลปีงบ ${viewYear} (ปีเก่า)${isStaff ? ' — แก้ไขได้ แต่จะไม่ส่งแจ้งเตือน' : ' — ดูได้อย่างเดียว'}</span>
+      <button class="fy-chip px-3 py-1.5 rounded-lg font-bold text-sm text-white btn-hover" data-year="${fyInfo.current}" style="font-family:${CONFIG.font_family};background-color:#d97706;">↩ กลับปีปัจจุบัน (${fyInfo.current})</button>
+    </div>` : '';
+  return `
+    <div class="rounded-2xl p-4 shadow-lg mb-6" style="background-color:${CONFIG.surface_color};">
+      <div class="flex flex-wrap items-center justify-between gap-3">
+        <div class="flex flex-wrap items-center gap-2">
+          <span class="font-bold" style="font-family:${CONFIG.font_family};font-size:${CONFIG.font_size}px;color:${CONFIG.text_color};">ปีงบประมาณ</span>
+          ${years.map(chip).join('')}
+          ${loading}
+        </div>
+        ${closeBtn}
+      </div>
+      ${archiveNote}
+    </div>`;
+}
+
+function attachYearBarHandlers_() {
+  document.querySelectorAll('.fy-chip').forEach(b => { b.onclick = () => switchYear_(parseInt(b.dataset.year, 10)); });
+  const cb = document.getElementById('closeFyBtn');
+  if (cb) cb.onclick = () => showCloseFyModal_();
+  const cat = document.getElementById('manageDebtCatBtn');
+  if (cat) cat.onclick = () => showDebtCategoryModal_();
+}
+
+// ─── ปิดปีงบ (เจ้าหน้าที่) — ยืนยัน 2 ชั้น: อ่านสรุป + พิมพ์ "ปิดปี 2569" ───
+function showCloseFyModal_() {
+  const fy = fyInfo.current;
+  if (!fy || viewYear) return;
+  if (Object.keys(pendingDocChanges).length) {
+    showToast('⚠️ มีการเปลี่ยนสถานะที่ยังไม่บันทึก กรุณาบันทึกหรือยกเลิกก่อน', 'error');
+    return;
+  }
+  const isReturned = d => d.returned === true || d.returned === 'TRUE' || d.returned === 'true';
+  const notArchived = documents.filter(d => parseInt(d.status) !== 6).length;
+  const pending     = debts.filter(d => !isReturned(d)).length;
+  const phrase      = 'ปิดปี ' + fy;
+  const li = (txt, color) => `<li style="font-family:${CONFIG.font_family};font-size:${CONFIG.font_size*.9}px;color:${color || CONFIG.text_color};line-height:1.6;">${txt}</li>`;
+
+  const modal = document.createElement('div');
+  modal.className = 'fixed inset-0 flex items-center justify-center z-50 p-4';
+  modal.style.backgroundColor = 'rgba(0,0,0,0.7)';
+  modal.innerHTML = `
+    <div class="rounded-2xl p-6 w-full max-w-lg card-animate" style="background-color:${CONFIG.surface_color};max-height:90vh;overflow-y:auto;">
+      <h3 class="font-bold mb-4" style="font-family:${CONFIG.font_family};font-size:${CONFIG.font_size*1.3}px;color:${CONFIG.text_color};">🗓️ ปิดปีงบประมาณ ${fy}</h3>
+      <ul class="space-y-2 mb-4" style="list-style:disc;padding-left:1.25rem;">
+        ${li(`เอกสาร <b>${documents.length}</b> รายการ และลูกหนี้ <b>${debts.length}</b> รายการ จะย้ายไปเก็บเป็น <b>ปีงบ ${fy}</b> (กดดูและแก้ไขย้อนหลังได้)`)}
+        ${notArchived ? li(`เอกสาร <b>${notArchived}</b> รายการที่ยังไม่ถึงสถานะ "จัดเก็บ" จะถูกปรับเป็น <b>จัดเก็บ</b>`, '#b45309') : ''}
+        ${pending ? li(`⚠️ ลูกหนี้ที่ยังไม่คืนเงิน <b>${pending}</b> ราย จะย้ายไปปีงบ ${fy} และ<b>จะไม่ถูกแจ้งเตือนอีก</b> (ยังแก้สถานะได้ในปีเก่า)`, '#dc2626') : ''}
+        ${li(`ปีงบ <b>${fy + 1}</b> จะเริ่มต้นว่าง — ประกาศ และหมวดลูกหนี้ ใช้ร่วมกันทุกปี`)}
+      </ul>
+      <label class="block font-bold mb-1.5" for="closeFyInput" style="font-family:${CONFIG.font_family};font-size:${CONFIG.font_size*.9}px;color:${CONFIG.text_color};">พิมพ์ <span style="color:#dc2626;">${phrase}</span> เพื่อยืนยัน</label>
+      <input type="text" id="closeFyInput" autocomplete="off" class="w-full px-4 py-3 rounded-xl border-2 mb-3" style="font-family:${CONFIG.font_family};border-color:#dc2626;">
+      <p id="closeFyErr" class="hidden mb-3 font-bold" style="font-family:${CONFIG.font_family};font-size:${CONFIG.font_size*.85}px;color:#dc2626;"></p>
+      <div class="flex gap-3">
+        <button id="closeFyCancel" class="flex-1 py-3 rounded-xl font-bold btn-hover" style="font-family:${CONFIG.font_family};background-color:${CONFIG.background_color};color:${CONFIG.text_color};">ยกเลิก</button>
+        <button id="closeFyGo" disabled class="flex-1 py-3 rounded-xl font-bold text-white btn-hover opacity-50" style="font-family:${CONFIG.font_family};background-color:#dc2626;">🗓️ ปิดปีงบ ${fy}</button>
+      </div>
+    </div>`;
+  document.body.appendChild(modal);
+
+  const input = document.getElementById('closeFyInput');
+  const go    = document.getElementById('closeFyGo');
+  const err   = document.getElementById('closeFyErr');
+  input.focus();
+  input.oninput = () => {
+    const ok = input.value.trim() === phrase;
+    go.disabled = !ok;
+    go.classList.toggle('opacity-50', !ok);
+  };
+  document.getElementById('closeFyCancel').onclick = () => modal.remove();
+  go.onclick = async () => {
+    if (input.value.trim() !== phrase) return;
+    go.disabled = true;
+    document.getElementById('closeFyCancel').disabled = true;
+    go.innerHTML = '<span class="spinner"></span>กำลังปิดปี (อาจใช้เวลา 1 นาที)...';
+    err.classList.add('hidden');
+    const res = await GAS.closeFiscalYear({ confirmYear: fy });
+    if (res.ok) {
+      modal.remove();
+      fyInfo = { current: res.newYear, archives: [res.closedYear, ...(fyInfo.archives || []).filter(y => y !== res.closedYear)] };
+      showToast(`✅ ปิดปีงบ ${res.closedYear} แล้ว — เริ่มปีงบ ${res.newYear}`);
+      refreshData('full');
+    } else {
+      err.textContent = '❌ ' + (res.error || 'ปิดปีไม่สำเร็จ');
+      err.classList.remove('hidden');
+      go.disabled = false;
+      document.getElementById('closeFyCancel').disabled = false;
+      go.innerHTML = `🗓️ ปิดปีงบ ${fy}`;
+    }
+  };
+}
+
+// ─── จัดการหมวดลูกหนี้ (เจ้าหน้าที่) — เพิ่ม / ลบ / เรียงลำดับ ───
+// ลำดับ = ลำดับหัวข้อในแจ้งเตือน LINE/OneSignal | ลบไม่ได้ถ้ายังมีลูกหนี้ใช้ (GAS ตรวจทุกปีอีกชั้น)
+function showDebtCategoryModal_() {
+  let draft = BUDGET_OPTIONS.map(c => ({ ...c }));
+  const used = name => debts.filter(d => d.budget === name).length; // นับจากข้อมูลปีที่กำลังดู
+  const yearLabel = viewYear || fyInfo.current || '';
+  const modal = document.createElement('div');
+  modal.className = 'fixed inset-0 flex items-center justify-center z-50 p-4';
+  modal.style.backgroundColor = 'rgba(0,0,0,0.7)';
+  document.body.appendChild(modal);
+
+  const smallBtn = 'px-3 py-1.5 rounded-lg text-xs font-bold btn-hover flex-shrink-0';
+  function build(errMsg) {
+    const nextColor = DEBT_CAT_PALETTE[draft.length % DEBT_CAT_PALETTE.length];
+    const rows = draft.map((c, i) => `
+      <div class="flex items-center gap-2 p-3 rounded-xl" style="background-color:${CONFIG.background_color};">
+        <span style="width:14px;height:14px;border-radius:4px;background:${c.color};flex:none;"></span>
+        <div class="flex-1 min-w-0">
+          <p class="font-bold truncate" style="font-family:${CONFIG.font_family};font-size:${CONFIG.font_size*.9}px;color:${CONFIG.text_color};">${escHtml_(c.name)}</p>
+          <p class="text-xs opacity-60 truncate" style="font-family:${CONFIG.font_family};color:${CONFIG.text_color};">ป้าย: ${escHtml_(c.short)} · ใช้อยู่ ${used(c.name)} ราย${yearLabel ? ' (ปี ' + yearLabel + ')' : ''}</p>
+        </div>
+        <button class="cat-move ${smallBtn}" data-i="${i}" data-d="-1" ${i === 0 ? 'disabled' : ''} style="background-color:${CONFIG.surface_color};color:${CONFIG.text_color};${i === 0 ? 'opacity:.3;' : ''}">▲</button>
+        <button class="cat-move ${smallBtn}" data-i="${i}" data-d="1" ${i === draft.length - 1 ? 'disabled' : ''} style="background-color:${CONFIG.surface_color};color:${CONFIG.text_color};${i === draft.length - 1 ? 'opacity:.3;' : ''}">▼</button>
+        <button class="cat-del ${smallBtn} text-white" data-i="${i}" style="background-color:#ef4444;">ลบ</button>
+      </div>`).join('');
+    modal.innerHTML = `
+      <div class="rounded-2xl p-6 w-full max-w-lg card-animate" style="background-color:${CONFIG.surface_color};max-height:90vh;overflow-y:auto;">
+        <div class="flex justify-between items-center mb-2">
+          <h3 class="font-bold" style="font-family:${CONFIG.font_family};font-size:${CONFIG.font_size*1.3}px;color:${CONFIG.text_color};">🏷️ หมวดลูกหนี้</h3>
+          <button id="catClose" class="text-3xl leading-none" style="color:${CONFIG.text_color};opacity:.4;">&times;</button>
+        </div>
+        <p class="mb-4 opacity-60" style="font-family:${CONFIG.font_family};font-size:${CONFIG.font_size*.8}px;color:${CONFIG.text_color};">ลำดับด้านล่าง = ลำดับหัวข้อในข้อความแจ้งเตือน · ลบได้เฉพาะหมวดที่ไม่มีลูกหนี้ใช้</p>
+        <div class="space-y-2 mb-4">${rows}</div>
+        <div class="rounded-xl p-4 mb-4" style="background-color:${CONFIG.background_color};">
+          <h4 class="font-bold mb-3" style="font-family:${CONFIG.font_family};font-size:${CONFIG.font_size*.95}px;color:${CONFIG.text_color};">➕ เพิ่มหมวดใหม่</h4>
+          <div class="space-y-2">
+            <input type="text" id="catName"  maxlength="60" placeholder="ชื่อหมวด เช่น ออมทรัพย์" class="w-full px-4 py-2.5 rounded-xl border-2" style="font-family:${CONFIG.font_family};border-color:${CONFIG.accent_color};">
+            <div class="flex gap-2 items-center">
+              <input type="text" id="catShort" maxlength="20" placeholder="ชื่อย่อบนป้าย (ไม่ใส่ = ใช้ชื่อหมวด)" class="flex-1 min-w-0 px-4 py-2.5 rounded-xl border-2" style="font-family:${CONFIG.font_family};border-color:${CONFIG.accent_color};">
+              <input type="color" id="catColor" value="${nextColor}" title="สีป้าย" class="flex-shrink-0 rounded-lg cursor-pointer" style="width:44px;height:44px;border:none;padding:0;background:none;">
+            </div>
+            <button id="catAdd" class="w-full py-2.5 rounded-xl font-bold text-white btn-hover" style="font-family:${CONFIG.font_family};background-color:${CONFIG.accent_color};">➕ เพิ่มเข้ารายการ</button>
+          </div>
+        </div>
+        <p id="catErr" class="${errMsg ? '' : 'hidden'} mb-3 font-bold" style="font-family:${CONFIG.font_family};font-size:${CONFIG.font_size*.85}px;color:#dc2626;">${escHtml_(errMsg || '')}</p>
+        <div class="flex gap-3">
+          <button id="catCancel" class="flex-1 py-3 rounded-xl font-bold btn-hover" style="font-family:${CONFIG.font_family};background-color:${CONFIG.background_color};color:${CONFIG.text_color};">ยกเลิก</button>
+          <button id="catSave" class="flex-1 py-3 rounded-xl font-bold text-white btn-hover" style="font-family:${CONFIG.font_family};background:linear-gradient(135deg,${CONFIG.primary_color},${CONFIG.accent_color});">💾 บันทึก</button>
+        </div>
+      </div>`;
+    attach();
+  }
+
+  function attach() {
+    document.getElementById('catClose').onclick  = () => modal.remove();
+    document.getElementById('catCancel').onclick = () => modal.remove();
+    modal.querySelectorAll('.cat-move').forEach(b => b.onclick = () => {
+      const i = +b.dataset.i, j = i + (+b.dataset.d);
+      if (j < 0 || j >= draft.length) return;
+      [draft[i], draft[j]] = [draft[j], draft[i]];
+      build();
+    });
+    modal.querySelectorAll('.cat-del').forEach(b => b.onclick = () => {
+      const c = draft[+b.dataset.i];
+      const n = used(c.name);
+      if (n) return build(`ลบ "${c.name}" ไม่ได้ — ยังมีลูกหนี้ใช้ ${n} ราย ย้ายลูกหนี้ไปหมวดอื่นก่อน`);
+      if (draft.length <= 1) return build('ต้องมีอย่างน้อย 1 หมวด');
+      draft.splice(+b.dataset.i, 1);
+      build();
+    });
+    document.getElementById('catAdd').onclick = () => {
+      const name  = document.getElementById('catName').value.trim();
+      const short = document.getElementById('catShort').value.trim();
+      const color = document.getElementById('catColor').value;
+      if (!name) return build('กรุณาใส่ชื่อหมวด');
+      if (/[<>"'`]/.test(name + short)) return build('ชื่อหมวดห้ามมีอักขระ < > " \' `');
+      if (name === BUDGET_UNSET) return build(`ใช้ชื่อ "${BUDGET_UNSET}" ไม่ได้`);
+      if (draft.some(c => c.name === name)) return build(`มีหมวด "${name}" อยู่แล้ว`);
+      if (draft.length >= 20) return build('มีหมวดได้ไม่เกิน 20 หมวด');
+      draft.push({ name, short: short || name, color });
+      build();
+    };
+    document.getElementById('catSave').onclick = async () => {
+      const btn = document.getElementById('catSave');
+      btn.disabled = true;
+      btn.innerHTML = '<span class="spinner"></span>กำลังบันทึก...';
+      const res = await GAS.saveDebtCategories({ categories: draft });
+      if (res.ok) {
+        setDebtCategories_(res.categories);
+        modal.remove();
+        showToast('✅ บันทึกหมวดลูกหนี้แล้ว');
+        render();
+      } else {
+        build(res.error || 'บันทึกไม่สำเร็จ');
+      }
+    };
+  }
+  build();
+}
+
 function renderStaffDashboard() {
   const filteredDocs  = filterDocuments(documents);
   const filteredDebts = filterDebts(debts);
@@ -1557,6 +1838,7 @@ function renderStaffDashboard() {
     <div class="w-full h-full" style="background-color:${CONFIG.background_color};">
       ${renderHeader(true)}
       <main class="max-w-7xl mx-auto px-3 md:px-6 py-4 md:py-6">
+        ${renderYearBar_(true)}
         ${renderStatusSummary(true)}
 
         <!-- Forms -->
@@ -1639,6 +1921,7 @@ function renderStaffDashboard() {
               <p class="text-sm mt-1" style="font-family:${CONFIG.font_family};color:${CONFIG.text_color};opacity:.7;">${getFilterStatusText(debtFilterType,null,null,true)}</p>
             </div>
             <div class="flex gap-3 flex-wrap items-center">
+              ${fyInfo.current ? `<button id="manageDebtCatBtn" class="px-4 py-2 rounded-xl font-bold btn-hover text-sm" style="font-family:${CONFIG.font_family};border:2px solid #7c3aed;color:#7c3aed;background-color:${CONFIG.surface_color};">🏷️ จัดการหมวด</button>` : ''}
               ${renderDebtBudgetFilter('debtBudgetFilterSel')}
               ${renderDebtFilter('debtFilter')}
               <button id="toggleReturnedDebtsBtn" class="px-4 py-2 rounded-xl font-bold btn-hover text-sm" style="font-family:${CONFIG.font_family};background-color:${showReturnedDebts?CONFIG.accent_color:CONFIG.surface_color};color:${showReturnedDebts?'white':CONFIG.text_color};border:2px solid ${CONFIG.accent_color};">
@@ -1719,6 +2002,7 @@ function renderPublicView() {
     <div class="w-full h-full" style="background-color:${CONFIG.background_color};">
       ${renderHeader(false)}
       <main class="max-w-7xl mx-auto px-3 md:px-6 py-4 md:py-6">
+        ${renderYearBar_(false)}
         ${renderStatusSummary(false)}
 
         <div class="rounded-2xl p-4 md:p-6 shadow-lg mb-6" style="background-color:${CONFIG.surface_color};">
@@ -1753,10 +2037,12 @@ function render() {
   } else if (currentScreen === 'staff') {
     app.innerHTML = renderStaffDashboard();
     attachStaffHandlers();
+    attachYearBarHandlers_();
     renderPendingBar();
   } else if (currentScreen === 'public') {
     app.innerHTML = renderPublicView();
     attachPublicHandlers();
+    attachYearBarHandlers_();
   } else if (currentScreen === 'budget') {
     app.innerHTML = renderBudgetScreen();
     attachBudgetHandlers();
@@ -2091,6 +2377,7 @@ function attachStaffHandlers() {
     pendingDocChanges = {};
     authCredential = null; // ล้างสิทธิ์ออกเมื่อออกจากระบบ
     clearPrivateData_();   // ล้างรายการเอกสาร/ลูกหนี้ออกจากหน่วยความจำทันที
+    viewYear = null; yearLoading = false;
     currentScreen = 'welcome';
     render();
     refreshData('welcome'); // อัปเดตตัวเลขสรุปหน้าแรกใหม่ กันตัวเลขค้างจากตอนแก้ไขข้อมูล
@@ -2267,7 +2554,7 @@ function attachPublicHandlers() {
   attachDebtBudgetFilterHandler();
   attachDebtPaginationHandlers('Public');
   attachReturnedDebtsToggle('toggleReturnedDebtsBtnPublic');
-  document.getElementById('backHomeBtn').onclick = () => { clearInterval(clockInterval); authCredential = null; clearPrivateData_(); currentScreen = 'welcome'; render(); refreshData('welcome'); };
+  document.getElementById('backHomeBtn').onclick = () => { clearInterval(clockInterval); authCredential = null; clearPrivateData_(); viewYear = null; yearLoading = false; currentScreen = 'welcome'; render(); refreshData('welcome'); };
   const sb = document.getElementById('summaryBtn');
   if (sb) sb.onclick = () => showSummaryModal();
   const bb = document.getElementById('budgetBtn');
@@ -2284,6 +2571,8 @@ async function init() {
     welcomeDocStatusCounts = wc.docStatusCounts;
     debtStats     = wc.debtStats || debtStats;
     announcements = wc.announcements || [];
+    if (wc.fy) fyInfo = wc.fy;
+    if (wc.debtCategories) setDebtCategories_(wc.debtCategories);
     welcomeLoaded = true;
   }
   const bc = cacheGet_(BUDGET_CACHE_KEY);
