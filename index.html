@@ -389,6 +389,9 @@ function switchYear_(year) {
   const prev = viewYear;
   viewYear = target;
   docCurrentPage = 1; debtCurrentPage = 1;
+  // ปิดปีแล้วเอกสารทุกฉบับเป็น "จัดเก็บ" → ปีเก่าต้องแสดงที่จัดเก็บ ไม่งั้นรายการว่าง
+  showArchived = !!target;
+  docStatusFilter = null;
   clearPrivateData_();
   yearLoading = true;
   render();
