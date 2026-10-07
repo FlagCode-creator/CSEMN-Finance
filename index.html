@@ -44,6 +44,11 @@
     @media (max-width: 640px) {
       input, select, textarea { font-size: 16px !important; max-width: 100%; }
       input[type="date"], input[type="month"] { min-width: 0; }
+      /* iOS Safari: ช่องวันที่แบบ native ไม่ยอมหดตามความกว้าง ล้นขอบขวา ต้องปิดหน้าตา native (แตะแล้วยังเปิดตัวเลือกวันที่ของ iOS เหมือนเดิม) */
+      @supports (-webkit-touch-callout: none) {
+        input[type="date"], input[type="month"] { -webkit-appearance: none; appearance: none; display: block; min-height: 2.75rem; background-color: #fff; }
+        input[type="date"]::-webkit-date-and-time-value, input[type="month"]::-webkit-date-and-time-value { text-align: left; }
+      }
       /* บีบระยะห่างให้แน่นขึ้น ดูใกล้เคียงหน้าคอมมากขึ้น (แสดงได้มากต่อจอ) */
       .p-8 { padding: 0.9rem !important; }
       .p-6 { padding: 0.8rem !important; }
